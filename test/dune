@@ -1,0 +1,12 @@
+(cram
+ (package db)
+ (deps
+  %{bin:sdb}
+  001.cmds
+  002.cmds
+  003.cmds
+  004.cmds
+  005.cmds
+  006.cmds
+  007.cmds
+  008.cmds))

@@ -1,0 +1,69 @@
+(rule
+ (copy %{read:../conf/which-atomic} atomic.ml))
+
+(library
+ (name atomic)
+ (public_name rowex.atomic)
+ (modules atomic))
+
+(library
+ (name rowex)
+ (modules rowex)
+ (public_name rowex)
+ (libraries hxd.core hxd.string atomic fmt logs)
+ (ocamlopt_flags -O3)
+ (instrumentation
+  (backend bisect_ppx))
+ (foreign_stubs
+  (language c)
+  (flags
+   -std=c11
+   (:standard)
+   (:include sse.sexp))
+  (names rowex)))
+
+(library
+ (name part)
+ (modules part)
+ (public_name db.part)
+ (libraries unix miou rowex fmt)
+ (ocamlopt_flags -O3 -unbox-closures -unbox-closures-factor 20)
+ (foreign_stubs
+  (language c)
+  (flags
+   -std=c11
+   (:standard)
+   (:include endian.sexp)
+   (:include sse.sexp)
+   (:include flush.sexp))
+  (names part)))
+
+(library
+ (name db)
+ (modules db)
+ (public_name db)
+ (libraries rowex part))
+
+(library
+ (name mem)
+ (modules mem)
+ (public_name db-mem)
+ (libraries unix rowex)
+ (foreign_stubs
+  (language c)
+  (names mem)))
+
+(rule
+ (targets endian.sexp)
+ (action
+  (run ../conf/endian.exe)))
+
+(rule
+ (targets sse.sexp)
+ (action
+  (run ../conf/sse.exe)))
+
+(rule
+ (targets flush.sexp)
+ (action
+  (run ../conf/flush.exe)))

@@ -1,0 +1,4 @@
+version=0.26.2
+break-separators=before
+break-collection-expressions=wrap
+exp-grouping=preserve
