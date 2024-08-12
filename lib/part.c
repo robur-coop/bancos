@@ -395,6 +395,7 @@ void clflush_range(const void *ptr, uint64_t len) {
 }
 
 void mfence() { __asm__ volatile("mfence" ::: "memory"); }
+void sfence() { __asm__ volatile("sfence" ::: "memory"); }
 
 CAMLprim value caml_persist(value memory, value addr, value len) {
   mfence();
