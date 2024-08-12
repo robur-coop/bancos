@@ -1,3 +1,5 @@
 (executable
  (name fuzz)
+ (public_name bank.fuzz)
+ (package bank)
  (libraries bank crowbar))
