@@ -443,7 +443,7 @@ CAMLprim value caml_get_ocaml_string_length(value memory, value addr) {
 
 void movnt64(uint64_t *dst, uint64_t const src) {
   sfence();
-  _mm_stream_si64((long long int *)dst, src);
+  _mm_stream_si64((uint64_t *)dst, src);
   sfence();
 }
 
