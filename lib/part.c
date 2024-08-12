@@ -384,7 +384,7 @@ CAMLprim value caml_persist(value memory, value addr, value len) {
   sfence();
   return Val_unit;
 }
-#else /* #elif ART_CLFLUSH? */
+#elif ART_CLFLUSH
 void clflush(const void *ptr) { __asm__ volatile("clflush %0" : "+m"(ptr)); }
 
 void clflush_range(const void *ptr, uint64_t len) {
@@ -402,6 +402,8 @@ CAMLprim value caml_persist(value memory, value addr, value len) {
   mfence();
   return Val_unit;
 }
+#else
+#error "Unsupported system"
 #endif
 
 #include <caml/alloc.h>
