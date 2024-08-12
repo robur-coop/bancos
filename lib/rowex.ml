@@ -437,7 +437,7 @@ module Make (S : S) = struct
       let prefix = Int64.(logor (shift_left (of_int p1) 16) (of_int p0)) in
       let rs = Int64.(logor (shift_left (of_int prefix_count) 32) prefix) in
       let* () = atomic_set memory A.(addr + _header_prefix) Value.leint64 rs in
-      if flush then persist memory A.(addr + _header_prefix) ~len:8
+      if flush then persist memory A.(addr + _header_prefix) ~len:size_of_word
       else return ()
 
   (**** FIND CHILD ****)
@@ -757,9 +757,8 @@ module Make (S : S) = struct
         let* () = atomic_set m pk Value.int8 (k lxor 128) in
         (* NOTE(dinosaure): this [clflush] will failure-atomically flush the
            cache line including counters and entire key entries. *)
-        let* () = persist m addr ~len:8 in
+        let* () = persist m addr ~len:size_of_word in
         let* () = movnt64 m ~dst:b (Addr.unsafe_to_int v) in
-        let* () = persist m b ~len:A.length in
         return true
       else
         let* () = atomic_set m pk Value.int8 (k lxor 128) in
@@ -813,7 +812,7 @@ module Make (S : S) = struct
 
   let rec until_is_locked m addr version retries =
     if retries > 1000 then
-      Log.err (fun m ->
+      Log.warn (fun m ->
           m "%016x locked for a too long time (%d)" (Addr.unsafe_to_int addr)
             retries);
     if version land 0b10 = 0b10 then
@@ -890,13 +889,12 @@ module Make (S : S) = struct
       assert false
     end
     else
-      let p = ctz bitfield in
-      let* k' = atomic_get m A.(addr + _header_length + p) Value.int8 in
-      let kp = A.(addr + _header_length + 16 + (p * A.length)) in
-      let* value = atomic_get m kp Value.addr_rd in
-      if (not (A.is_null value)) && k' = k lxor 128 then
-        return A.(addr + _header_length + 16 + (p * A.length))
-      else _n16_child_pos m addr k (bitfield lxor (1 lsl p))
+      let pos = ctz bitfield in
+      let b = A.(addr + _header_length + 16 + (pos * A.length)) in
+      let* value = atomic_get m b Value.addr_rd in
+      if not (A.is_null value) then
+        return A.(addr + _header_length + 16 + (pos * A.length))
+      else _n16_child_pos m addr k (bitfield lxor (1 lsl pos))
 
   let _n16_child_pos m addr k =
     let* compact_count = get_compact_count m addr in
@@ -1349,7 +1347,7 @@ module Make (S : S) = struct
     let rec restart () =
       incr retries;
       if !retries > 100 then
-        Log.err (fun m -> m "Too many retries to insert %S" (key :> string));
+        Log.warn (fun m -> m "Too many retries to insert %S" (key :> string));
       Log.debug (fun m -> m "insert: retry");
       (insert [@tailcall]) m root key leaf
     and _insert node next_node _parent kn level =
@@ -1541,8 +1539,8 @@ module Make (S : S) = struct
             atomic_set m A.(to_wronly c) Value.addr_rd A.(to_rdonly null)
           in
           let* () = persist m A.(to_wronly c) ~len:A.length in
-          let* () = atomic_set m kp Value.int8 48 in
-          persist m A.(to_wronly (addr + _header_length + (key / 8))) ~len:64
+          let child_index_64 = A.(addr + _header_length) in
+          set_n48_key m child_index_64 key 48
         else
           let kp = A.(addr + _header_length + key) in
           let* i = atomic_get m kp Value.int8 in
@@ -1797,8 +1795,7 @@ module Make (S : S) = struct
     _remove null root ~key '\000' 0
 
   let remove m root key =
-    Log.debug (fun m -> m "Remove");
-    Log.debug (fun m -> m "@[<hov>%a@]" (Hxd_string.pp Hxd.default) key);
+    Log.debug (fun m -> m "Remove %S" key);
     remove m root key
 
   let rec _check_prefix ~key ~key_len ~prefix ~level idx max =

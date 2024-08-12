@@ -1,7 +1,7 @@
 (cram
- (package db)
+ (package bancos)
  (deps
-  %{bin:sdb}
+  %{bin:bancos.sdb}
   001.cmds
   002.cmds
   003.cmds

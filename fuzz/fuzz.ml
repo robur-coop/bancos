@@ -47,7 +47,7 @@ module Oracle = struct
 end
 
 module Rowex = struct
-  include Mem
+  include Bank
 
   let lookup t key = try `Found (lookup t key) with Not_found -> `Not_found
 

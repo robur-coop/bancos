@@ -5,13 +5,12 @@ type command =
   | Noop
 
 let clean commands =
-  let active, awaits = List.partition Db.is_running commands in
-  Fmt.epr "%d active(s) tasks are pending\n%!" (List.length active);
-  let rec go : Db.command list -> unit = function
+  let active, awaits = List.partition Bancos.is_running commands in
+  let rec go : Bancos.command list -> unit = function
     | [] -> ()
     | cmd :: rest ->
         begin
-          match Db.await cmd with
+          match Bancos.await cmd with
           | `Not_found key ->
               Logs.err (fun m -> m "%S not found" (key :> string))
           | `Found (key, value) ->
@@ -26,9 +25,9 @@ let clean commands =
   go awaits;
   active
 
-let execute ?quiet:_ commands filepath =
-  Miou.run ~domains:6 @@ fun () ->
-  let t = Db.openfile filepath in
+let execute ?quiet:_ commands ~readers ~writers filepath =
+  Miou.run ~domains:(readers + writers) @@ fun () ->
+  let t = Bancos.openfile ~readers ~writers filepath in
   Logs.debug (fun m -> m "ROWEX file loaded");
   let rec go active_commands =
     let active_commands = clean active_commands in
@@ -36,13 +35,13 @@ let execute ?quiet:_ commands filepath =
     | None -> active_commands
     | Some Noop -> go active_commands
     | Some (Lookup key) ->
-        let cmd = Db.lookup t key in
+        let cmd = Bancos.lookup t key in
         go (cmd :: active_commands)
     | Some (Insert (key, value)) ->
-        let cmd = Db.insert t key value in
+        let cmd = Bancos.insert t key value in
         go (cmd :: active_commands)
     | Some (Remove key) ->
-        let cmd = Db.remove t key in
+        let cmd = Bancos.remove t key in
         go (cmd :: active_commands)
   in
   let active_commands = go [] in
@@ -53,8 +52,7 @@ let execute ?quiet:_ commands filepath =
   in
   go active_commands;
   Logs.debug (fun m -> m "Results consumed, start to close the db file");
-  Fmt.epr ">>> kill the db\n%!";
-  Db.close t
+  Bancos.close t
 
 let parse line =
   match String.split_on_char ' ' line with
@@ -93,12 +91,20 @@ let setup_commands input =
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
-let run quiet commands filepath =
-  execute ~quiet commands (Fpath.to_string filepath);
+let run quiet commands filepath readers writers =
+  execute ~quiet commands ~readers ~writers (Fpath.to_string filepath);
   `Ok ()
 
 open Cmdliner
 open Args
+
+let writers =
+  let doc = "The number of writers." in
+  Arg.(value & opt int 2 & info [ "w"; "writers" ] ~doc)
+
+let readers =
+  let doc = "The number of readers." in
+  Arg.(value & opt int 4 & info [ "r"; "readers" ] ~doc)
 
 let index =
   let doc = "The ROWEX file." in
@@ -125,10 +131,13 @@ let commands =
 let term_setup_commands = Term.(const setup_commands $ commands)
 
 let term =
-  Term.(ret (const run $ term_setup_logs $ term_setup_commands $ index))
+  Term.(
+    ret
+      (const run $ term_setup_logs $ term_setup_commands $ index $ readers
+     $ writers))
 
 let cmd =
-  let doc = "A simple tool to manipulate an KV-store (serialized)." in
+  let doc = "A simple tool to manipulate an KV-store (parallel)." in
   let man = [] in
   Cmd.v (Cmd.info "db" ~doc ~man) term
 

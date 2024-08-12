@@ -1,37 +1,37 @@
 (executable
  (name sdb)
  (modules sdb)
- (public_name sdb)
- (package db)
+ (public_name bancos.sdb)
+ (package bancos)
  (instrumentation
   (backend bisect_ppx))
- (libraries db.args db.part))
+ (libraries bancos.args part))
 
 (executable
  (name db)
  (modules db)
- (public_name db)
- (package db)
+ (public_name bancos.db)
+ (package bancos)
  (instrumentation
   (backend bisect_ppx))
- (libraries db.args db))
+ (libraries bancos.args bancos))
 
 (executable
  (name info)
  (modules info)
- (public_name db.info)
- (package db)
- (libraries db.args db))
+ (public_name bancos.info)
+ (package bancos)
+ (libraries bancos.args bancos))
 
 (executable
  (name intro)
  (modules intro)
- (public_name db.intro)
- (package db)
- (libraries db db.args))
+ (public_name bancos.intro)
+ (package bancos)
+ (libraries bancos bancos.args hxd.core hxd.string))
 
 (library
  (name args)
  (modules args)
- (public_name db.args)
+ (public_name bancos.args)
  (libraries cmdliner fpath fmt.tty fmt.cli logs.fmt logs.cli logs.threaded))

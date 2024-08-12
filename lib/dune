@@ -10,7 +10,7 @@
  (name rowex)
  (modules rowex)
  (public_name rowex)
- (libraries hxd.core hxd.string atomic fmt logs)
+ (libraries atomic fmt logs)
  (ocamlopt_flags -O3)
  (instrumentation
   (backend bisect_ppx))
@@ -25,7 +25,7 @@
 (library
  (name part)
  (modules part)
- (public_name db.part)
+ (public_name bancos.part)
  (libraries unix miou rowex fmt)
  (ocamlopt_flags -O3 -unbox-closures -unbox-closures-factor 20)
  (foreign_stubs
@@ -39,16 +39,16 @@
   (names part)))
 
 (library
- (name db)
- (modules db)
- (public_name db)
+ (name bancos)
+ (modules bancos)
+ (public_name bancos)
  (libraries rowex part))
 
 (library
- (name mem)
- (modules mem)
- (public_name db-mem)
- (libraries unix rowex)
+ (name bank)
+ (modules bank)
+ (public_name bank)
+ (libraries unix rowex hxd.core hxd.string)
  (foreign_stubs
   (language c)
   (names mem)))

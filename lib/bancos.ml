@@ -44,8 +44,8 @@ type t = {
   ; txs_locker : Miou.Mutex.t * Miou.Condition.t
   ; rxs : command Miou.Queue.t
   ; rxs_locker : Miou.Mutex.t * Miou.Condition.t
-  ; close : bool Atomic.t
-  ; workers : int Atomic.t
+  ; mutable close : bool Atomic.t
+  ; mutable workers : int
   ; idle : Miou.Mutex.t * Miou.Condition.t
   ; part : Part.t
   ; orphans : unit Miou.orphans
@@ -117,20 +117,26 @@ let writer ~uid t () =
       let wrs = Miou.Queue.(to_list (transfer t.txs)) in
       do_wrs ~uid t wrs;
       Log.debug (fun m -> m "writer [%02x] sleep" uid);
-      if (not (Atomic.get t.close)) && Atomic.get t.workers = 0 then
-        Miou.Condition.signal (snd t.idle)
+      Miou.Mutex.lock (fst t.idle);
+      if (not (Atomic.get t.close)) && t.workers = 0 then
+        Miou.Condition.signal (snd t.idle);
+      Miou.Mutex.unlock (fst t.idle)
     done
   with
   | Exit ->
+      Miou.Mutex.unlock (fst t.txs_locker);
       Log.debug (fun m -> m "writer [%02x] quit" uid);
-      ignore (Atomic.fetch_and_add t.workers (-1));
+      Miou.Mutex.lock (fst t.idle);
+      t.workers <- t.workers - 1;
       Miou.Condition.signal (snd t.idle);
-      Miou.Mutex.unlock (fst t.txs_locker)
+      Miou.Mutex.unlock (fst t.idle)
   | exn ->
       Log.err (fun m ->
           m "writer [%02x] exited with: %S" uid (Printexc.to_string exn));
-      ignore (Atomic.fetch_and_add t.workers (-1));
-      Miou.Condition.signal (snd t.idle)
+      Miou.Mutex.lock (fst t.idle);
+      t.workers <- t.workers - 1;
+      Miou.Condition.signal (snd t.idle);
+      Miou.Mutex.unlock (fst t.idle)
 
 let reader t () =
   let exception Exit in
@@ -144,14 +150,25 @@ let reader t () =
       Miou.Mutex.unlock (fst t.rxs_locker);
       let rds = Miou.Queue.(to_list (transfer t.rxs)) in
       do_rds t rds;
-      if (not (Atomic.get t.close)) && Atomic.get t.workers = 0 then
-        Miou.Condition.signal (snd t.idle)
+      Miou.Mutex.lock (fst t.idle);
+      if (not (Atomic.get t.close)) && t.workers = 0 then
+        Miou.Condition.signal (snd t.idle);
+      Miou.Mutex.unlock (fst t.idle)
     done
-  with Exit ->
-    Log.debug (fun m -> m "reader quit");
-    ignore (Atomic.fetch_and_add t.workers (-1));
-    Miou.Condition.signal (snd t.idle);
-    Miou.Mutex.unlock (fst t.rxs_locker)
+  with
+  | Exit ->
+      Miou.Mutex.unlock (fst t.rxs_locker);
+      Log.debug (fun m -> m "reader quit");
+      Miou.Mutex.lock (fst t.idle);
+      t.workers <- t.workers - 1;
+      Miou.Condition.signal (snd t.idle);
+      Miou.Mutex.unlock (fst t.idle)
+  | exn ->
+      Log.err (fun m -> m "reader exited with: %S" (Printexc.to_string exn));
+      Miou.Mutex.lock (fst t.idle);
+      t.workers <- t.workers - 1;
+      Miou.Condition.signal (snd t.idle);
+      Miou.Mutex.unlock (fst t.idle)
 
 let rec terminate t =
   match Miou.care t.orphans with
@@ -173,7 +190,7 @@ let close t =
       try
         while true do
           Miou.Mutex.lock (fst t.idle);
-          if Atomic.get t.workers <= 0 then raise Exit;
+          if t.workers <= 0 then raise Exit;
           Miou.Condition.wait (snd t.idle) (fst t.idle);
           Miou.Mutex.unlock (fst t.idle)
         done
@@ -210,7 +227,7 @@ let openfile ?(readers = 4) ?(writers = 2) filepath =
     ; rxs = Miou.Queue.create ()
     ; rxs_locker = Miou.(Mutex.create (), Condition.create ())
     ; close = Atomic.make false
-    ; workers = Atomic.make (readers + writers)
+    ; workers = readers + writers
     ; idle = Miou.(Mutex.create (), Condition.create ())
     ; part
     ; orphans

@@ -434,9 +434,8 @@ CAMLprim value caml_get_ocaml_string_length(value memory, value addr) {
   ln = __bswap_32(ln);
 #endif
 
-  return Val_long((ln - 2) * sizeof(uintnat)
-                  - (v0[ln - 2] >> ((sizeof(uintnat) * 8) - 8))
-                  - 1);
+  return Val_long((ln - 2) * sizeof(uintnat) -
+                  (v0[ln - 2] >> ((sizeof(uintnat) * 8) - 8)) - 1);
 }
 
 void movnt64(uint64_t *dst, uint64_t const src) {
@@ -461,9 +460,8 @@ CAMLprim value caml_movnt64(value memory, value dst, value src) {
   return Val_unit;
 }
 
-CAMLprim value
-caml_msync(value ba) {
-  struct caml_ba_array *b = Caml_ba_array_val (ba) ;
+CAMLprim value caml_msync(value ba) {
+  struct caml_ba_array *b = Caml_ba_array_val(ba);
 
   if (b->flags & CAML_BA_MAPPED_FILE)
     assert(msync(b->data, b->dim[0], MS_SYNC | MS_INVALIDATE) == 0);

@@ -7,15 +7,17 @@ type memory =
 
 type cell = { addr : int; len : int; uid : int }
 
+module Set = Set.Make (Int)
+
 type t = {
     memory : memory Atomic.t
   ; root : Rowex.rdwr Rowex.Addr.t
-  ; free : (int, int list) Hashtbl.t
+  ; free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
   ; free_locker : Miou.Mutex.t
   ; queue_locker : Miou.Mutex.t
   ; active_writers : int Queue.t
-  ; released_writers : int Queue.t
+  ; mutable released_writers : Set.t
   ; older_active_writer : int Atomic.t
   ; collected : cell Miou.Queue.t
 }
@@ -23,14 +25,14 @@ type t = {
 type reader = { memory : memory Atomic.t; root : Rowex.ro Rowex.Addr.t }
 
 type writer = {
-    free : (int, int list) Hashtbl.t
+    free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
   ; free_locker : Miou.Mutex.t
   ; queue_locker : Miou.Mutex.t
   ; memory : memory Atomic.t
   ; root : Rowex.rdwr Rowex.Addr.t
   ; active_writers : int Queue.t
-  ; released_writers : int Queue.t
+  ; released_writers : Set.t
   ; older_active_writer : int Atomic.t
   ; collected : cell Miou.Queue.t
   ; uid : int
@@ -179,27 +181,27 @@ module Garbage_collector = struct
     let v = Atomic.make 1 in
     fun () -> Atomic.fetch_and_add v 1
 
-  let unsafe_add_free_cell writer ~addr:cell ~len =
-    Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" cell len);
+  let unsafe_add_free_cell writer ~addr ~len =
+    Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" addr len);
     let () =
       try
         let cells = Hashtbl.find writer.free len in
-        Hashtbl.replace writer.free len (cell :: cells)
-      with Not_found -> Hashtbl.add writer.free len [ cell ]
+        Hashtbl.replace writer.free len (Set.add addr cells)
+      with Not_found -> Hashtbl.add writer.free len (Set.singleton addr)
     in
     ignore (Atomic.fetch_and_add writer.free_cells 1)
 
   let get_free_cell writer ~len =
     if Atomic.get writer.free_cells > 0 then
       Miou.Mutex.protect writer.free_locker @@ fun () ->
-      match Hashtbl.find writer.free len with
+      match Set.to_list (Hashtbl.find writer.free len) with
       | [ cell ] ->
           ignore (Atomic.fetch_and_add writer.free_cells (-1));
           Hashtbl.remove writer.free len;
           Some cell
       | cell :: cells ->
           ignore (Atomic.fetch_and_add writer.free_cells (-1));
-          Hashtbl.replace writer.free len cells;
+          Hashtbl.replace writer.free len (Set.of_list cells);
           Some cell
       | [] ->
           Hashtbl.remove writer.free len;
@@ -360,13 +362,13 @@ module Garbage_collector = struct
             Rowex.Addr.of_int_to_rdwr addr)
 end
 
-let add_free_cell (rowex : t) ~addr:cell ~len =
-  Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" cell len);
+let add_free_cell (rowex : t) ~addr ~len =
+  Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" addr len);
   let () =
     try
       let cells = Hashtbl.find rowex.free len in
-      Hashtbl.replace rowex.free len (cell :: cells)
-    with Not_found -> Hashtbl.add rowex.free len [ cell ]
+      Hashtbl.replace rowex.free len (Set.add addr cells)
+    with Not_found -> Hashtbl.add rowex.free len (Set.singleton addr)
   in
   ignore (Atomic.fetch_and_add rowex.free_cells 1)
 
@@ -492,7 +494,9 @@ module Reader = struct
   let collect : memory -> 'a Addr.t -> len:int -> uid:int -> unit t =
    fun _ _ ~len:_ ~uid:_ -> Fmt.failwith "Invalid reader operation (<collect>)"
 
-  let pause_intrinsic () = C.pause_intrinsic ()
+  let pause_intrinsic () =
+    Miou.yield ();
+    C.pause_intrinsic ()
 end
 
 module Writer = struct
@@ -650,7 +654,7 @@ let make memory =
     ; free_locker = Miou.Mutex.create ()
     ; queue_locker = Miou.Mutex.create ()
     ; active_writers = Queue.create ()
-    ; released_writers = Queue.create ()
+    ; released_writers = Set.empty
     ; older_active_writer = Atomic.make 0
     ; collected = Miou.Queue.create ()
     }
@@ -685,7 +689,7 @@ let load memory =
     ; free_locker = Miou.Mutex.create ()
     ; queue_locker = Miou.Mutex.create ()
     ; active_writers = Queue.create ()
-    ; released_writers = Queue.create ()
+    ; released_writers = Set.empty
     ; older_active_writer = Atomic.make 0
     ; collected = Miou.Queue.create ()
     }
@@ -707,7 +711,7 @@ let from_system ~filepath =
   end
   else
     let fd = Unix.openfile filepath Unix.[ O_RDWR; O_DSYNC; O_CREAT ] 0o644 in
-    Unix.ftruncate fd 10485760 (* 10M *);
+    Unix.ftruncate fd 31457280 (* 30M *);
     let stat = Unix.fstat fd in
     let memory =
       Unix.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout true
@@ -752,31 +756,16 @@ let add_writer (t : t) ~uid =
     Miou.Mutex.protect t.queue_locker @@ fun () ->
     Queue.push uid t.active_writers
 
-let rec clean_released_writers (t : t) released ~older =
-  match Queue.pop t.released_writers with
-  | uid' ->
-      if uid' = older then begin
-        Log.debug (fun m -> m "%016x cleaned from old released writers" uid');
-        assert (Queue.pop t.active_writers = uid');
-        List.iter (fun w -> Queue.push w t.released_writers) released;
-        match Queue.peek t.active_writers with
-        | older -> clean_released_writers t released ~older
-        | exception Queue.Empty -> ()
-      end
-      else clean_released_writers t (uid' :: released) ~older
-  | exception Queue.Empty ->
-      List.iter (fun w -> Queue.push w t.released_writers) released
-
-let clean_released_writers (t : t) =
-  if Queue.is_empty t.released_writers = false then
+let rec clean_released_writers (t : t) =
+  if Set.is_empty t.released_writers = false then
     match Queue.peek t.active_writers with
     | older ->
-        Log.debug (fun m -> m "try to clean %016x" older);
-        clean_released_writers t [] ~older
-    | exception Queue.Empty ->
-        Log.err (fun m ->
-            m "we missed a writers: %a" Fmt.(Dump.queue int) t.released_writers);
-        assert false
+        if Set.mem older t.released_writers then begin
+          t.released_writers <- Set.remove older t.released_writers;
+          ignore (Queue.pop t.active_writers);
+          clean_released_writers t
+        end
+    | exception Queue.Empty -> ()
 
 let release_writer (t : t) ~uid =
   let older =
@@ -788,14 +777,12 @@ let release_writer (t : t) ~uid =
           assert (Queue.pop t.active_writers = uid);
           Log.debug (fun m -> m "clean possible released writers");
           clean_released_writers t;
-          match Queue.peek t.active_writers with
-          | older -> older
-          | exception Queue.Empty -> 0
+          Option.value ~default:0 (Queue.peek_opt t.active_writers)
         end
         else begin
           Log.debug (fun m ->
               m "it exists an older active writer (%016x) than %016x" older uid);
-          Queue.push uid t.released_writers;
+          t.released_writers <- Set.add uid t.released_writers;
           older
         end
     | exception Queue.Empty ->
