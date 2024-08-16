@@ -99,7 +99,8 @@ module type S = sig
 
   val pause_intrinsic : unit -> unit t
   (** [pause_intrinsic] provides a hint to the processor that the code
-      sequence is a spin-wait loop. *)
+      sequence is a spin-wait loop. If ROWEX is used in a scheduler offering the
+      [Yield] directive, it is advisable to use the latter. *)
 
   val get : memory -> 'a rd Addr.t -> ('t, 'v) value -> 'v t
 

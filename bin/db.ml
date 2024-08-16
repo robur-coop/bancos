@@ -4,55 +4,59 @@ type command =
   | Lookup of Rowex.key
   | Noop
 
-let clean commands =
-  let active, awaits = List.partition Bancos.is_running commands in
-  let rec go : Bancos.command list -> unit = function
-    | [] -> ()
-    | cmd :: rest ->
-        begin
-          match Bancos.await cmd with
-          | `Not_found key ->
-              Logs.err (fun m -> m "%S not found" (key :> string))
-          | `Found (key, value) ->
-              Logs.info (fun m -> m "%S => %x" (key :> string) value)
-          | `Duplicate key ->
-              Logs.err (fun m -> m "%S already exists" (key :> string))
-          | `Exists key -> Logs.info (fun m -> m "%S exists" (key :> string))
-          | `Ok -> ()
-        end;
-        go rest
-  in
-  go awaits;
-  active
+let iter ?(quiet = false) to_delete node =
+  let cmd = Miou.Sequence.data node in
+  if Bancos.is_running cmd then ()
+  else begin
+    to_delete := node :: !to_delete;
+    match Bancos.await cmd with
+    | `Not_found key -> Logs.err (fun m -> m "%S not found" (key :> string))
+    | `Found (key, value) ->
+        if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
+        Logs.info (fun m -> m "%S => %x" (key :> string) value)
+    | `Duplicate key ->
+        Logs.err (fun m -> m "%S already exists" (key :> string))
+    | `Exists key -> Logs.info (fun m -> m "%S exists" (key :> string))
+    | `Ok -> ()
+  end
 
-let execute ?quiet:_ commands ~readers ~writers filepath =
+let clean ?(quiet = false) commands =
+  let to_delete = ref [] in
+  Miou.Sequence.iter_node ~f:(iter ~quiet to_delete) commands;
+  List.iter Miou.Sequence.remove !to_delete
+
+let execute ?(quiet = false) ?(and_remove = false) commands ~readers ~writers
+    filepath =
   Miou.run ~domains:(readers + writers) @@ fun () ->
   let t = Bancos.openfile ~readers ~writers filepath in
   Logs.debug (fun m -> m "ROWEX file loaded");
-  let rec go active_commands =
-    let active_commands = clean active_commands in
+  let seq = Miou.Sequence.create () in
+  let rec go () =
+    clean ~quiet seq;
     match commands () with
-    | None -> active_commands
-    | Some Noop -> go active_commands
+    | None -> ()
+    | Some Noop -> go ()
     | Some (Lookup key) ->
         let cmd = Bancos.lookup t key in
-        go (cmd :: active_commands)
+        ignore Miou.Sequence.(add Left seq cmd);
+        go ()
     | Some (Insert (key, value)) ->
         let cmd = Bancos.insert t key value in
-        go (cmd :: active_commands)
+        ignore Miou.Sequence.(add Left seq cmd);
+        go ()
     | Some (Remove key) ->
         let cmd = Bancos.remove t key in
-        go (cmd :: active_commands)
+        ignore Miou.Sequence.(add Left seq cmd);
+        go ()
   in
-  let active_commands = go [] in
+  go ();
   Logs.debug (fun m -> m "Commands sended, start to clean-up results");
-  let rec go = function
-    | [] -> ()
-    | active_commands -> go (clean active_commands)
-  in
-  go active_commands;
+  while Miou.Sequence.is_empty seq = false do
+    clean ~quiet seq
+  done;
   Logs.debug (fun m -> m "Results consumed, start to close the db file");
-  Bancos.close t
+  Bancos.close t;
+  if and_remove then Unix.unlink filepath
 
 let parse line =
   match String.split_on_char ' ' line with
@@ -91,8 +95,9 @@ let setup_commands input =
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
-let run quiet commands filepath readers writers =
-  execute ~quiet commands ~readers ~writers (Fpath.to_string filepath);
+let run quiet commands filepath readers writers and_remove =
+  execute ~quiet ~and_remove commands ~readers ~writers
+    (Fpath.to_string filepath);
   `Ok ()
 
 open Cmdliner
@@ -112,6 +117,10 @@ let index =
   let pp = Fpath.pp in
   let filepath = Arg.conv (parser, pp) in
   Arg.(required & opt (some filepath) None & info [ "i"; "index" ] ~doc)
+
+let and_remove =
+  let doc = "Remove the idx file produced." in
+  Arg.(value & flag & info [ "and-remove" ] ~doc)
 
 let commands =
   let doc =
@@ -134,7 +143,7 @@ let term =
   Term.(
     ret
       (const run $ term_setup_logs $ term_setup_commands $ index $ readers
-     $ writers))
+     $ writers $ and_remove))
 
 let cmd =
   let doc = "A simple tool to manipulate an KV-store (parallel)." in

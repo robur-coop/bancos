@@ -185,8 +185,14 @@ let close t =
   let rec go backoff =
     let closed = Atomic.get t.close in
     if (not closed) && Atomic.compare_and_set t.close false true then begin
-      Miou.Condition.broadcast (snd t.rxs_locker);
-      Miou.Condition.broadcast (snd t.txs_locker);
+      Miou.Mutex.protect (fst t.rxs_locker)
+        begin
+          fun () -> Miou.Condition.broadcast (snd t.rxs_locker)
+        end;
+      Miou.Mutex.protect (fst t.txs_locker)
+        begin
+          fun () -> Miou.Condition.broadcast (snd t.txs_locker)
+        end;
       try
         while true do
           Miou.Mutex.lock (fst t.idle);
