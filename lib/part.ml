@@ -494,9 +494,7 @@ module Reader = struct
   let collect : memory -> 'a Addr.t -> len:int -> uid:int -> unit t =
    fun _ _ ~len:_ ~uid:_ -> Fmt.failwith "Invalid reader operation (<collect>)"
 
-  let pause_intrinsic () =
-    Miou.yield ();
-    C.pause_intrinsic ()
+  let pause_intrinsic () = C.pause_intrinsic ()
 end
 
 module Writer = struct
