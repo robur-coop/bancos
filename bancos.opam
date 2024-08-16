@@ -8,7 +8,7 @@ homepage: "https://github.com/robur-coop/bancos"
 doc: "https://robur-coop.github.io/robur-coop/"
 bug-reports: "https://github.com/robur-coop/bancos/issues"
 depends: [
-  "ocaml" {>= "5.0.0"}
+  "ocaml" {>= "5.1.0"}
   "dune" {>= "2.8.0"}
   "dune-configurator"
   "fmt" {>= "0.8.7"}
