@@ -3,7 +3,7 @@
 #define EAX_IDX 0
 #define EBX_IDX 1
 #define ECX_IDX 2
-#define EDX_IDX 4
+#define EDX_IDX 3
 
 #if defined(__x86_64__) || defined(__amd64__)
 #include <cpuid.h>
