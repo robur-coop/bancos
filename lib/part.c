@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L // to force [posix_memalign]
 #include <assert.h>
 #include <caml/address_class.h>
 #include <caml/bigarray.h>
