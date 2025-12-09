@@ -444,8 +444,8 @@ module Reader = struct
         Addr.of_int_to_rdwr
           (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
 
-  let atomic_set :
-      type v. memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
+  let atomic_set : type v.
+      memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun _ _ _ _ -> Fmt.failwith "Invalid reader operation (<atomic_set>)"
 
   let fetch_add : memory -> 'a wr Addr.t -> (atomic, int) value -> int -> int t
@@ -459,8 +459,7 @@ module Reader = struct
   let fetch_or : memory -> 'a wr Addr.t -> (atomic, int) value -> int -> int t =
    fun _ _ _ _ -> Fmt.failwith "Invalid reader operation (<fetch_or>)"
 
-  let compare_exchange :
-      type a.
+  let compare_exchange : type a.
          memory
       -> ?weak:bool
       -> rdwr Addr.t
@@ -515,8 +514,8 @@ module Writer = struct
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> Reader.atomic_get (to_reader t) addr k
 
-  let atomic_set :
-      type v. memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
+  let atomic_set : type v.
+      memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun { memory; _ } addr k v ->
     Log.debug (fun m ->
         m "atomic_set %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
@@ -570,8 +569,7 @@ module Writer = struct
     | LEInt -> C.atomic_fetch_or_leuintnat memory (Addr.unsafe_to_int addr) v
     | _ -> assert false
 
-  let compare_exchange :
-      type a.
+  let compare_exchange : type a.
          memory
       -> ?weak:bool
       -> rdwr Addr.t

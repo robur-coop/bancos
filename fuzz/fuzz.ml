@@ -81,10 +81,9 @@ let () =
   let r1 = List.map (Rowex.do_command t1) cmds in
   check_eq ~pp:Fmt.(Dump.list pp_result) r0 r1;
   Hashtbl.iter
-    begin
-      fun k v ->
-        match Rowex.lookup t1 k with
-        | `Found v' -> check_eq v v'
-        | `Not_found -> Crowbar.failf "%S does not exist" (k :> string)
+    begin fun k v ->
+      match Rowex.lookup t1 k with
+      | `Found v' -> check_eq v v'
+      | `Not_found -> Crowbar.failf "%S does not exist" (k :> string)
     end
     t0

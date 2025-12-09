@@ -5,7 +5,7 @@
  (package bancos)
  (instrumentation
   (backend bisect_ppx))
- (libraries bancos.args part))
+ (libraries bancos.cli part))
 
 (executable
  (name db)
@@ -14,24 +14,24 @@
  (package bancos)
  (instrumentation
   (backend bisect_ppx))
- (libraries bancos.args bancos))
+ (libraries bancos.cli bancos))
 
 (executable
  (name info)
  (modules info)
  (public_name bancos.info)
  (package bancos)
- (libraries bancos.args bancos))
+ (libraries bancos.cli bancos))
 
 (executable
  (name intro)
  (modules intro)
  (public_name bancos.intro)
  (package bancos)
- (libraries bancos bancos.args hxd.core hxd.string))
+ (libraries bancos bancos.cli hxd.core hxd.string))
 
 (library
- (name args)
- (modules args)
- (public_name bancos.args)
+ (name bancos_cli)
+ (modules bancos_cli)
+ (public_name bancos.cli)
  (libraries cmdliner fpath fmt.tty fmt.cli logs.fmt logs.cli logs.threaded))
