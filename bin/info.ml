@@ -177,19 +177,19 @@ let run _quiet filepath =
     `Ok ()
 
 open Cmdliner
-open Args
+open Bancos_cli
 
 let index =
-  let doc = "The index file." in
+  let doc = "The index file" in
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
-  let filepath = Arg.conv (parser, pp) in
-  Arg.(required & pos 0 (some filepath) None & info [] ~doc)
+  let v = Arg.conv (parser, pp) in
+  Arg.(required & pos 0 (some v) None & info [] ~doc)
 
 let term = Term.(ret (const run $ term_setup_logs $ index))
 
 let cmd =
-  let doc = "A simple tool to manipulate an KV-store." in
+  let doc = "A simple tool to manipulate an KV-store" in
   let man = [] in
   Cmd.v (Cmd.info "db" ~doc ~man) term
 

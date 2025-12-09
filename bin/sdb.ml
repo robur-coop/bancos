@@ -25,11 +25,10 @@ let execute ?(quiet = false) commands filepath =
     | Some (Insert (key, value)) ->
         let[@warning "-8"] (Ok ()) =
           Part.writer t @@ fun writer ->
-          begin
-            try Part.insert writer key value
-            with Rowex.Duplicate ->
-              Part.remove writer key;
-              Part.insert writer key value
+          begin try Part.insert writer key value
+          with Rowex.Duplicate ->
+            Part.remove writer key;
+            Part.insert writer key value
           end
         in
         go (succ n)
@@ -83,18 +82,19 @@ let run quiet commands filepath =
   `Ok ()
 
 open Cmdliner
-open Args
+open Bancos_cli
 
 let index =
-  let doc = "The ROWEX file." in
+  let doc = "The ROWEX file" in
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
-  let filepath = Arg.conv (parser, pp) in
-  Arg.(required & opt (some filepath) None & info [ "i"; "index" ] ~doc)
+  let v = Arg.conv (parser, pp) in
+  Arg.(required & opt (some v) None & info [ "i"; "index" ] ~doc)
 
 let commands =
   let doc =
-    "A file which contains different commands to execute into the index file."
+    "Specify a file which contains different commands to execute into the \
+     given index file"
   in
   let parser str =
     match Fpath.of_string str with
@@ -102,18 +102,19 @@ let commands =
     | Ok v -> error_msgf "%a does not exists" Fpath.pp v
     | Error _ as err -> err
   in
-  Arg.(
-    value
-    & opt (some (conv (parser, Fmt.string))) None
-    & info [ "c"; "commands" ] ~doc)
+  let open Arg in
+  value
+  & opt (some (conv (parser, Fmt.string))) None
+  & info [ "c"; "commands" ] ~doc
 
 let term_setup_commands = Term.(const setup_commands $ commands)
 
 let term =
-  Term.(ret (const run $ term_setup_logs $ term_setup_commands $ index))
+  let open Term in
+  const run $ term_setup_logs $ term_setup_commands $ index |> ret
 
 let cmd =
-  let doc = "A simple tool to manipulate an KV-store (serialized)." in
+  let doc = "A simple tool to manipulate an KV-store (serialized)" in
   let man = [] in
   Cmd.v (Cmd.info "db" ~doc ~man) term
 

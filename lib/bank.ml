@@ -102,8 +102,8 @@ module S = struct
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> get t addr k
 
-  let atomic_set :
-      type v. memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
+  let atomic_set : type v.
+      memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun { memory; _ } addr t v ->
     let addr = Addr.unsafe_to_int addr in
     match t with
@@ -197,8 +197,7 @@ module S = struct
     atomic_set memory addr t (v - v');
     v'
 
-  let compare_exchange :
-      type v.
+  let compare_exchange : type v.
          memory
       -> ?weak:bool
       -> rdwr Addr.t

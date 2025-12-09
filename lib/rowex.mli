@@ -2,12 +2,11 @@ exception Duplicate
 
 (** Persistent implementation of Adaptive Radix Tree.
 
-    This module implements the core of ROWEX/P-ART from the given
-    way to atomically load and store values. This implementation wants to
-    ensure 2 things:
+    This module implements the core of ROWEX/P-ART from the given way to
+    atomically load and store values. This implementation wants to ensure 2
+    things:
     - [insert] and [lookup] can be executed in {b true} parallelism
-    - persistence is ensured by required {i syscalls}
-*)
+    - persistence is ensured by required {i syscalls} *)
 
 type key = private string
 
@@ -64,23 +63,21 @@ module type S = sig
   val atomic_set : memory -> 'a wr Addr.t -> (atomic, 'v) value -> 'v -> unit t
 
   val persist : memory -> 'a wr Addr.t -> len:int -> unit t
-  (** [persist addr ~len] forces the data to get written out to memory.
-      Even if cache can be used to load some values, [persist] ensures that
-      the value is really stored {b persistently} into the given destination
-      such as we guarantee data validity despite power failures.
+  (** [persist addr ~len] forces the data to get written out to memory. Even if
+      cache can be used to load some values, [persist] ensures that the value is
+      really stored {b persistently} into the given destination such as we
+      guarantee data validity despite power failures.
 
       More concretely, it should be (for [len <= word_size]):
       {[
-        sfence
-        clwb addr
-        sfence
+        sfence clwb addr sfence
       ]}
 
       {b NOTE}: the first [sfence] is not systematically needed depending on
       what was done before (and if it's revelant for the current computation
       regardless the status of the cache) - such disposition is hard to track
       and we prefer to assume a correct write order than a micro-optimization.
-    *)
+  *)
 
   val movnt64 : memory -> dst:'a wr Addr.t -> int -> unit t
   val set_n48_key : memory -> 'a wr Addr.t -> int -> int -> unit t
@@ -98,9 +95,9 @@ module type S = sig
     -> bool t
 
   val pause_intrinsic : unit -> unit t
-  (** [pause_intrinsic] provides a hint to the processor that the code
-      sequence is a spin-wait loop. If ROWEX is used in a scheduler offering the
-      [Yield] directive, it is advisable to use the latter. *)
+  (** [pause_intrinsic] provides a hint to the processor that the code sequence
+      is a spin-wait loop. If ROWEX is used in a scheduler offering the [Yield]
+      directive, it is advisable to use the latter. *)
 
   val get : memory -> 'a rd Addr.t -> ('t, 'v) value -> 'v t
 

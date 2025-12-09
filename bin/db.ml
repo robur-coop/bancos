@@ -101,22 +101,22 @@ let run quiet commands filepath readers writers and_remove =
   `Ok ()
 
 open Cmdliner
-open Args
+open Bancos_cli
 
 let writers =
-  let doc = "The number of writers." in
+  let doc = "The number of writers" in
   Arg.(value & opt int 2 & info [ "w"; "writers" ] ~doc)
 
 let readers =
-  let doc = "The number of readers." in
+  let doc = "The number of readers" in
   Arg.(value & opt int 4 & info [ "r"; "readers" ] ~doc)
 
 let index =
-  let doc = "The ROWEX file." in
+  let doc = "The ROWEX file" in
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
-  let filepath = Arg.conv (parser, pp) in
-  Arg.(required & opt (some filepath) None & info [ "i"; "index" ] ~doc)
+  let v = Arg.conv (parser, pp) in
+  Arg.(required & opt (some v) None & info [ "i"; "index" ] ~doc)
 
 let and_remove =
   let doc = "Remove the idx file produced." in
@@ -124,7 +124,8 @@ let and_remove =
 
 let commands =
   let doc =
-    "A file which contains different commands to execute into the index file."
+    "Specify a file which contains different commands to execute into the \
+     given index file."
   in
   let parser str =
     match Fpath.of_string str with
@@ -132,21 +133,20 @@ let commands =
     | Ok v -> error_msgf "%a does not exists" Fpath.pp v
     | Error _ as err -> err
   in
-  Arg.(
-    value
-    & opt (some (conv (parser, Fmt.string))) None
-    & info [ "c"; "commands" ] ~doc)
+  let open Arg in
+  value
+  & opt (some (conv (parser, Fmt.string))) None
+  & info [ "c"; "commands" ] ~doc
 
 let term_setup_commands = Term.(const setup_commands $ commands)
 
 let term =
-  Term.(
-    ret
-      (const run $ term_setup_logs $ term_setup_commands $ index $ readers
-     $ writers $ and_remove))
+  let open Term in
+  const run $ term_setup_logs $ term_setup_commands $ index $ readers $ writers
+  $ and_remove |> ret
 
 let cmd =
-  let doc = "A simple tool to manipulate an KV-store (parallel)." in
+  let doc = "A simple tool to manipulate an KV-store (parallel)" in
   let man = [] in
   Cmd.v (Cmd.info "db" ~doc ~man) term
 

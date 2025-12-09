@@ -245,8 +245,8 @@ let[@coverage off] pp_value : type c a. (c, a) value Fmt.t =
   | OCaml_string -> Fmt.pf ppf "ocaml_string"
   | OCaml_string_length -> Fmt.pf ppf "leintnat"
 
-let[@coverage off] pp_of_value :
-    type c a. ?prefer_hex:bool -> (c, a) value -> a Fmt.t =
+let[@coverage off] pp_of_value : type c a.
+    ?prefer_hex:bool -> (c, a) value -> a Fmt.t =
  fun ?(prefer_hex = false) -> function
   | LEInt ->
       fun ppf v ->
@@ -783,8 +783,8 @@ module Make (S : S) = struct
         let* () = atomic_set m b Value.addr_rd (Addr.to_rdonly v) in
         return true
 
-  let add_child :
-      type s. memory -> s node -> char -> 'c rd Addr.t -> bool -> bool t =
+  let add_child : type s.
+      memory -> s node -> char -> 'c rd Addr.t -> bool -> bool t =
    fun m n k v flush ->
     let k = Char.code k in
     match n with
@@ -1001,8 +1001,7 @@ module Make (S : S) = struct
       ~len:_sizeof_n256
     >>| n256
 
-  let alloc :
-      type s.
+  let alloc : type s.
          memory
       -> according_to:s node
       -> prefix:string
@@ -1016,8 +1015,7 @@ module Make (S : S) = struct
     | N48 _ -> alloc_n48 m ~prefix ~prefix_count ~level
     | N256 _ -> alloc_n256 m ~prefix ~prefix_count ~level
 
-  let alloc_bigger :
-      type s.
+  let alloc_bigger : type s.
          memory
       -> according_to:s node
       -> prefix:string
@@ -1051,8 +1049,8 @@ module Make (S : S) = struct
   let copy_n4_into : type s. memory -> zero node -> s node -> unit t =
    fun m (N4 _ as nx) ny -> _copy_n4_into m nx ny 0
 
-  let rec _copy_n16_into :
-      type s. memory -> zero succ node -> s node -> int -> unit t =
+  let rec _copy_n16_into : type s.
+      memory -> zero succ node -> s node -> int -> unit t =
    fun m (N16 addr as nx) ny i ->
     let* ccount = get_compact_count m addr in
     if i >= ccount then return ()
@@ -1070,8 +1068,8 @@ module Make (S : S) = struct
   let copy_n16_into : type s. memory -> zero succ node -> s node -> unit t =
    fun m (N16 _ as nx) ny -> _copy_n16_into m nx ny 0
 
-  let rec _copy_n48_into :
-      type s. memory -> zero succ succ node -> s node -> int -> unit t =
+  let rec _copy_n48_into : type s.
+      memory -> zero succ succ node -> s node -> int -> unit t =
    fun m (N48 addr as nx) ny i ->
     if i == 256 then return ()
     else
@@ -1089,8 +1087,8 @@ module Make (S : S) = struct
       =
    fun m (N48 _ as nx) ny -> _copy_n48_into m nx ny 0
 
-  let rec _copy_n256_into :
-      type s. memory -> zero succ succ succ node -> s node -> int -> unit t =
+  let rec _copy_n256_into : type s.
+      memory -> zero succ succ succ node -> s node -> int -> unit t =
    fun m (N256 addr as nx) ny i ->
     if i == 256 then return ()
     else
@@ -1102,8 +1100,8 @@ module Make (S : S) = struct
           let* _ = add_child m ny (Char.unsafe_chr i) value false in
           _copy_n256_into m nx ny (succ i)
 
-  let copy_n256_into :
-      type s. memory -> zero succ succ succ node -> s node -> unit t =
+  let copy_n256_into : type s.
+      memory -> zero succ succ succ node -> s node -> unit t =
    fun m (N256 _ as nx) ny -> _copy_n256_into m nx ny 0
 
   let copy_into : type s. memory -> s node -> s succ node -> unit t =
@@ -1114,8 +1112,7 @@ module Make (S : S) = struct
     | N48 _ -> copy_n48_into m nx ny
     | N256 _ -> copy_n256_into m nx ny
 
-  let insert_grow :
-      type s.
+  let insert_grow : type s.
          memory
       -> s node
       -> 'a wr Addr.t
@@ -1164,8 +1161,7 @@ module Make (S : S) = struct
     | N48 _ -> copy_n48_into m nx ny
     | N256 _ -> copy_n256_into m nx ny
 
-  let insert_compact :
-      type s.
+  let insert_compact : type s.
          memory
       -> s node
       -> 'a wr Addr.t
@@ -1577,8 +1573,7 @@ module Make (S : S) = struct
     | 3 -> _n256_remove m ~force ?flush addr k
     | _ -> assert false
 
-  let shrink :
-      type v.
+  let shrink : type v.
          memory
       -> v succ node
       -> v node

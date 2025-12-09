@@ -325,17 +325,17 @@ let run _quiet filepath (Addr addr) as_a_leaf =
     `Ok ()
 
 open Cmdliner
-open Args
+open Bancos_cli
 
 let index =
-  let doc = "The index file." in
+  let doc = "The index file" in
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
-  let filepath = Arg.conv (parser, pp) in
-  Arg.(required & pos 0 (some filepath) None & info [] ~doc)
+  let v = Arg.conv (parser, pp) in
+  Arg.(required & pos 0 (some v) None & info [] ~doc)
 
 let addr =
-  let doc = "The address of the node." in
+  let doc = "The address of the node" in
   let parser str =
     if String.length str > 0 && str.[0] = '@' then
       try Ok (Addr (int_of_string String.(sub str 1 (length str - 1))))
@@ -347,13 +347,13 @@ let addr =
   Arg.(required & pos 1 (some addr) None & info [] ~doc)
 
 let as_a_leaf =
-  let doc = "Show information of a leaf." in
+  let doc = "Show information of a lea." in
   Arg.(value & flag & info [ "as-a-leaf" ] ~doc)
 
 let term = Term.(ret (const run $ term_setup_logs $ index $ addr $ as_a_leaf))
 
 let cmd =
-  let doc = "A simple tool to show nodes into the given KV-store." in
+  let doc = "A simple tool to show nodes into the given KV-store" in
   let man = [] in
   Cmd.v (Cmd.info "db" ~doc ~man) term
 
