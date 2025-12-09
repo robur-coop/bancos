@@ -150,6 +150,9 @@ CAMLprim value caml_atomic_set_leuint64(value memory, value addr, uint64_t x) {
 
 #if defined(ART_SSE2)
 #include <emmintrin.h>
+#if !defined(__int64)
+#define __int64 long long
+#endif
 #elif defined(ART_NEON)
 #include "sse2neon.h"
 #else
@@ -443,7 +446,7 @@ CAMLprim value caml_get_ocaml_string_length(value memory, value addr) {
 
 void movnt64(uint64_t *dst, uint64_t const src) {
   sfence();
-  _mm_stream_si64((long long int *)dst, src);
+  _mm_stream_si64((__int64 *)dst, src);
   sfence();
 }
 
