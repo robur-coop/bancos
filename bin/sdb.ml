@@ -4,9 +4,9 @@ type command =
   | Lookup of Rowex.key
   | Noop
 
-let execute ?(quiet = false) commands filepath =
+let execute ?(quiet = false) commands filepath size =
   Miou.run ~domains:0 @@ fun () ->
-  let t = Part.from_system ~filepath in
+  let t = Part.from_system ~size filepath in
   let reader = Part.reader t in
   let rec go n =
     match commands () with
@@ -77,8 +77,8 @@ let setup_commands input =
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
-let run quiet commands filepath =
-  execute ~quiet commands (Fpath.to_string filepath);
+let run quiet commands filepath size =
+  execute ~quiet commands (Fpath.to_string filepath) size;
   `Ok ()
 
 open Cmdliner
@@ -90,6 +90,11 @@ let index =
   let pp = Fpath.pp in
   let v = Arg.conv (parser, pp) in
   Arg.(required & opt (some v) None & info [ "i"; "index" ] ~doc)
+
+let size =
+  let doc = "The size of the ROWEX file" in
+  let open Arg in
+  value & opt size 10485760 & info [ "s"; "size" ] ~doc ~docv:"SIZE"
 
 let commands =
   let doc =
@@ -111,7 +116,7 @@ let term_setup_commands = Term.(const setup_commands $ commands)
 
 let term =
   let open Term in
-  const run $ term_setup_logs $ term_setup_commands $ index |> ret
+  const run $ term_setup_logs $ term_setup_commands $ index $ size |> ret
 
 let cmd =
   let doc = "A simple tool to manipulate an KV-store (serialized)" in

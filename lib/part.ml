@@ -268,6 +268,7 @@ module System = struct
       in
       go 0
     in
+    (* we add 1MiB *)
     let new_size = Bigarray.Array1.dim writer.memory + 1048576 in
     let fd = Unix.openfile writer.filepath Unix.[ O_RDONLY ] 0o644 in
     let finally () = Unix.close fd in
@@ -837,13 +838,13 @@ let load ~filepath memory =
   scan t;
   t
 
-let from_system ~filepath =
+let from_system ?(size = 10485760) filepath =
   if Sys.file_exists filepath then load ~filepath (System.load_memory filepath)
   else
     let open Unix in
     let open Bigarray in
     let fd = Unix.openfile filepath Unix.[ O_RDWR; O_DSYNC; O_CREAT ] 0o644 in
-    Unix.ftruncate fd 10485760 (* 10M *);
+    Unix.ftruncate fd size;
     let len = (fstat fd).st_size in
     let memory = Unix.map_file fd ~pos:0L char c_layout true [| len |] in
     Unix.close fd;

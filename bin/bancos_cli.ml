@@ -72,3 +72,45 @@ let setup_logs utf_8 style_renderer level =
   Option.is_none level
 
 let term_setup_logs = Term.(const setup_logs $ utf_8 $ renderer $ verbosity)
+
+let bytes_of_string s =
+  let s = String.trim s in
+  let len = String.length s in
+  let rec find_non_digit i =
+    if i >= len then i
+    else if s.[i] >= '0' && s.[i] <= '9' then find_non_digit (i + 1)
+    else i
+  in
+  let idx = find_non_digit 0 in
+  let number_str = String.sub s 0 idx |> String.trim in
+  let unit_str = String.sub s idx (len - idx) |> String.trim in
+  let ( let* ) = Option.bind in
+  let* number = int_of_string_opt number_str in
+  let* multiplier =
+    match String.lowercase_ascii unit_str with
+    | "" | "b" -> Some 1
+    | "kib" -> Some 1024
+    | "mib" -> Some (1024 * 1024)
+    | "gib" -> Some (1024 * 1024 * 1024)
+    | "tib" -> Some (1024 * 1024 * 1024 * 1024)
+    | _ -> None
+  in
+  Some (number * multiplier)
+
+let sizes = [| "B"; "KiB"; "MiB"; "GiB"; "TiB" |]
+
+let bytes_to_size = function
+  | 0 -> "0b"
+  | n ->
+      let n = float_of_int n in
+      let i = Float.floor (Float.log n /. Float.log 1024.) in
+      let r = n /. Float.pow 1024. i in
+      Fmt.str "%.0f%s" r sizes.(int_of_float i)
+
+let size =
+  let parser str =
+    match bytes_of_string str with
+    | Some n -> Ok n
+    | None -> error_msgf "Invalid size: %S" str
+  in
+  Arg.conv (parser, Fmt.(using bytes_to_size string))
