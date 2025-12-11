@@ -12,3 +12,6 @@ val insert : writer -> Rowex.key -> int -> unit
 val from_system : filepath:string -> t
 val reader : t -> reader
 val writer : t -> (writer -> 'a) -> ('a, exn) result
+(* {b NOTE}: The writer specified in the function is not {b shareable} and
+   cannot be used across multiple domains. It must be assigned to a specific
+   domain and remain there. *)

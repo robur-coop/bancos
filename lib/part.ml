@@ -9,37 +9,6 @@ type cell = { addr : int; len : int; uid : int }
 
 module Set = Set.Make (Int)
 
-type t = {
-    memory : memory Atomic.t
-  ; root : Rowex.rdwr Rowex.Addr.t
-  ; free : (int, Set.t) Hashtbl.t
-  ; free_cells : int Atomic.t
-  ; free_locker : Miou.Mutex.t
-  ; queue_locker : Miou.Mutex.t
-  ; active_writers : int Queue.t
-  ; mutable released_writers : Set.t
-  ; older_active_writer : int Atomic.t
-  ; collected : cell Miou.Queue.t
-}
-
-type reader = { memory : memory Atomic.t; root : Rowex.ro Rowex.Addr.t }
-
-type writer = {
-    free : (int, Set.t) Hashtbl.t
-  ; free_cells : int Atomic.t
-  ; free_locker : Miou.Mutex.t
-  ; queue_locker : Miou.Mutex.t
-  ; memory : memory Atomic.t
-  ; root : Rowex.rdwr Rowex.Addr.t
-  ; active_writers : int Queue.t
-  ; released_writers : Set.t
-  ; older_active_writer : int Atomic.t
-  ; collected : cell Miou.Queue.t
-  ; uid : int
-}
-
-let size_of_word = Sys.word_size / 8
-
 module C = struct
   external persist : memory -> int -> int -> unit = "caml_persist" [@@noalloc]
 
@@ -127,15 +96,189 @@ module C = struct
   external get_leint31 : memory -> int -> int = "caml_get_leint31" [@@noalloc]
   external get_leintnat : memory -> int -> int = "caml_get_leintnat" [@@noalloc]
 
-  (*
-  external msync : memory -> unit = "caml_msync" [@@noalloc]
-*)
-
   external set_n48_key : memory -> int -> int -> int -> unit
     = "caml_set_n48_key"
   [@@noalloc]
 
   external movnt64 : memory -> int -> int -> unit = "caml_movnt64" [@@noalloc]
+  external msync : memory -> unit = "caml_msync" [@@noalloc]
+end
+
+module Clatch = struct
+  type t = {
+      mutex : Miou.Mutex.t
+    ; condition : Miou.Condition.t
+    ; mutable count : int
+  }
+
+  let create n =
+    {
+      mutex = Miou.Mutex.create ()
+    ; condition = Miou.Condition.create ()
+    ; count = n
+    }
+
+  let await t =
+    Miou.Mutex.protect t.mutex @@ fun () ->
+    while t.count > 0 do
+      Miou.Condition.wait t.condition t.mutex
+    done
+
+  let count_down t =
+    Miou.Mutex.protect t.mutex @@ fun () ->
+    t.count <- t.count - 1;
+    Miou.Condition.broadcast t.condition
+end
+
+(* we have 3 locks:
+   1) [queue_locker] for [active_writers], [released_writers] and [clatch].
+      it operates when we create/remove a writer and when one writer try to
+      extend the rowex file
+   2) [free_locker] for [free]. it operates when we wants to get a new free cell
+      or when we would like to add free cells. we prefetch [free_cells] (which
+      is an atomic, so it's safe to use it across domains) to see if we need to
+      lock/get a new free cell/unlock (this last operation has a cost). finally,
+      [collected] is a safe shareable queue across domains. the idea is to share
+      collected cell and do the [sweep] computation (to know if a collected
+      cell can be a free cell) without [free_locker]. after this computation,
+      we lock and add all free cells into [free]
+   3) [extend_locker] for [extend_result]. it operates when we would like to
+      extend the rowex file: so it's a particular situation where all writers
+      are trapped into a certain branch of our code and one of them do the
+      extensions and the others are waiting
+
+  A member of [t] is the memory we want to work on. This memory is accessible
+  atomically in the event that one (and only one) writer wants to extend the
+  file (and, in this case, modify the memory with its new, larger version).
+
+  Thus, writers can modify the [t.memory] field. Writers also have a
+  [writer.memory] field that is not atomic because they change it themselves
+  (and no one else can change it).
+
+  There remains the case of readers, which is a field that is neither atomic
+  nor mutable. Readers can still refer to the old version of the file even if
+  it has been updated, but this is not a problem, and when a new reader appears,
+  it will take the [t.memory] (which has just been modified by one of the
+  writers).
+
+  In short, logically:
+  - writers have their own "memory" field and do not need anyone else to modify
+    it except themselves in the event of an extension
+  - the main value [t] has a memory field that one of the writers can change if
+    there has been an extension, but [t] only uses it to give memory to the
+    readers
+  - readers do not need to update themselves; if they have the old version, the
+    user should create new ones
+*)
+type t = {
+    filepath : string
+  ; memory : memory Atomic.t
+  ; root : Rowex.rdwr Rowex.Addr.t
+  ; queue_locker : Miou.Mutex.t
+  ; active_writers : int Queue.t
+  ; released_writers : Set.t ref
+  ; clatch : Clatch.t option ref
+  ; free_locker : Miou.Mutex.t
+  ; free : (int, Set.t) Hashtbl.t
+  ; free_cells : int Atomic.t
+  ; older_active_writer : int Atomic.t
+  ; collected : cell Miou.Queue.t
+  ; extend_locker : Miou.Mutex.t
+  ; extend_result : memory Miou.Computation.t option ref
+}
+
+type reader = { memory : memory; root : Rowex.ro Rowex.Addr.t }
+
+type writer = {
+    filepath : string
+  ; free_locker : Miou.Mutex.t
+  ; free : (int, Set.t) Hashtbl.t
+  ; free_cells : int Atomic.t
+  ; older_active_writer : int Atomic.t
+  ; queue_locker : Miou.Mutex.t
+  ; clatch : Clatch.t option ref
+  ; active_writers : int Queue.t
+  ; released_writers : Set.t ref
+  ; collected : cell Miou.Queue.t
+  ; extend_locker : Miou.Mutex.t
+  ; extend_result : memory Miou.Computation.t option ref
+  ; mutable memory : memory
+  ; memory_from_t : memory Atomic.t
+  ; uid : int
+  ; root : Rowex.rdwr Rowex.Addr.t
+}
+
+let size_of_word = Sys.word_size / 8
+
+module System = struct
+  let load_memory ?len filepath =
+    let fd = Unix.openfile filepath Unix.[ O_RDWR; O_DSYNC ] 0o644 in
+    let finally () = Unix.close fd in
+    Fun.protect ~finally @@ fun () ->
+    let open Unix in
+    let open Bigarray in
+    let len = match len with Some len -> len | None -> (fstat fd).st_size in
+    let memory = Unix.map_file fd ~pos:0L char c_layout true [| len |] in
+    Bigarray.array1_of_genarray memory
+
+  let into_new_file ?(mode = 0o644) ?size filepath src =
+    let fd =
+      Unix.openfile filepath Unix.[ O_RDWR; O_CREAT; O_DSYNC; O_APPEND ] mode
+    in
+    (* 64KiB *)
+    let tmp = Bytes.create 0x10000 in
+    let rec go written =
+      match Unix.read src tmp 0 (Bytes.length tmp) with
+      | 0 -> written
+      | len ->
+          let str = Bytes.unsafe_to_string tmp in
+          let len = Unix.write_substring fd str 0 len in
+          go (written + len)
+    in
+    let finally () = Unix.close fd in
+    Fun.protect ~finally @@ fun () ->
+    Log.debug (fun m -> m "copy our rowex file into %s" filepath);
+    match (go 0, size) with
+    | _written, None -> ()
+    | written, Some size ->
+        Log.debug (fun m ->
+            m "%d byte(s) written (size: %d byte(s))" written size);
+        if written < size then Unix.ftruncate fd size
+
+  let prng = Stdlib.Domain.DLS.new_key Random.State.make_self_init
+
+  let temp =
+    Stdlib.Domain.DLS.new_key ~split_from_parent:Fun.id @@ fun () ->
+    match Sys.getenv "PART_TMP" with
+    | value when Sys.file_exists value && Sys.is_directory value -> value
+    | _ | (exception _) -> "/tmp"
+
+  let generate_filepath pattern =
+    let g = Domain.DLS.get prng in
+    let v = Random.State.bits g land 0xffffff in
+    let filename = Fmt.str pattern (Fmt.str "%06x" v) in
+    Filename.concat (Stdlib.Domain.DLS.get temp) filename
+
+  let copy_into_larger_filepath (writer : writer) =
+    let new_filepath =
+      let rec go retries =
+        if retries >= 10 then failwith "Impossible to create a new rowex file";
+        let v = generate_filepath "rowex-%s.idx" in
+        if Sys.file_exists v then go (succ retries) else v
+      in
+      go 0
+    in
+    let new_size = Bigarray.Array1.dim writer.memory + 1048576 in
+    let fd = Unix.openfile writer.filepath Unix.[ O_RDONLY ] 0o644 in
+    let finally () = Unix.close fd in
+    Fun.protect ~finally @@ fun () ->
+    (* please note that this part cannot be used if there is only one active
+       writer (see the worst branch of [really_alloc]). The advantage is that it
+       truly synchronizes writes so that our entire file can then be copied
+       cleanly to another destination. readers can continue to run normally. *)
+    C.msync writer.memory;
+    into_new_file ~size:new_size new_filepath fd;
+    (new_filepath, new_size)
 end
 
 external bigarray_unsafe_set_uint8 : memory -> int -> int -> unit
@@ -241,70 +384,15 @@ module Garbage_collector = struct
     in
     if Miou.Queue.length writer.collected > 0 then really_sweep ()
 
-  (*
-  let load_memory t =
-    let fd = Unix.openfile t.filepath Unix.[ O_RDWR; O_DSYNC ] 0o644 in
-    let finally () = Unix.close fd in
-    Fun.protect ~finally @@ fun () ->
-    let memory =
-      Unix.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout true [| t.size |]
-    in
-    let memory = Bigarray.array1_of_genarray memory in
-    t.memory <- memory
+  exception Retry_after_extension
 
-  let create_file ?(mode = 0o644) ?size filepath fn =
-    let fd =
-      Unix.openfile filepath
-        Unix.[ O_RDWR; O_CREAT; O_DSYNC; O_APPEND ]
-        (* O_DIRECT? *) mode
-    in
-    let rec fill acc =
-      match fn () with
-      | Some str ->
-          let len = Unix.write_substring fd str 0 (String.length str) in
-          fill (acc + len)
-      | None -> acc
-    in
-    let finally () = Unix.close fd in
-    Fun.protect ~finally @@ fun () ->
-    match (fill 0, size) with
-    | _size, None -> ()
-    | a, Some b -> if a < b then Unix.ftruncate fd b
-
-  let generate_filepath g pattern =
-    let v = Random.State.bits g land 0xffffff in
-    Fmt.str pattern (Fmt.str "%06x" v)
-
-  let _copy_into_larger_filepath t =
-    let new_filepath =
-      let rec go retries =
-        if retries >= 10 then failwith "Impossible to create a new rowex file";
-        let v =
-          Filename.(concat (dirname t.filepath))
-            (generate_filepath t.g "rowex-%s.idx")
-        in
-        if Sys.file_exists v then go (succ retries) else v
-      in
-      go 0
-    in
-    let new_size = t.size + 1048576 in
-    let fd = Unix.openfile t.filepath Unix.[ O_RDONLY ] 0o644 in
-    let buf = Bytes.create 0x1000 in
-    let rec copy () =
-      match Unix.read fd buf 0 (Bytes.length buf) with
-      | 0 -> None
-      | len -> Some (Bytes.sub_string buf 0 len)
-      | exception Unix.(Unix_error (EINTR, _, _)) -> copy ()
-    in
-    let finally () = Unix.close fd in
-    Fun.protect ~finally @@ fun () ->
-    C.msync t.memory;
-    create_file ~size:new_size new_filepath copy;
-    (new_filepath, new_size)
-  *)
+  let unsafe_count_active_writers writer =
+    let rw = !(writer.released_writers) in
+    let fn acc uid = if Set.mem uid rw then acc else acc + 1 in
+    Queue.fold fn 0 writer.active_writers
 
   let really_alloc writer ~kind len payloads =
-    let memory = Atomic.get writer.memory in
+    let memory = writer.memory in
     let len = (len + (size_of_word - 1)) / size_of_word * size_of_word in
     Log.debug (fun m -> m "try to allocate %d byte(s)" len);
     let old_brk = C.atomic_fetch_add_leuintnat memory 0 len in
@@ -316,34 +404,77 @@ module Garbage_collector = struct
         C.atomic_set_leuintnat memory (addr + Rowex._header_owner) writer.uid;
       Rowex.Addr.of_int_to_rdwr addr
     end
-    else raise Out_of_memory
-  (* (
-     Log.debug (fun m -> m "prepare next index");
-     let new_filepath, new_size = copy_into_larger_filepath t in
-     waiting_pending_readers_and_lock t;
-     t.filepath <- new_filepath;
-     t.size <- new_size;
-     load_memory t;
-     assert (Atomic.compare_and_set t.lock true false);
-     Miou.Condition.broadcast (snd t.readers_locker);
-     assert (brk + len <= t.size);
-     blitv payloads t.memory brk;
-     Log.debug (fun m -> m "copy at %016x:" brk);
-     Log.debug (fun m ->
-         m "@[<hov>%a@]"
-           (Hxd_string.pp Hxd.default)
-           (String.concat "" payloads));
-     C.atomic_set_leuintnat t.memory 0 (brk + len);
-     Log.debug (fun m ->
-         m "atomic_set %016x (%a : %a)" 0 (Rowex.pp_of_value LEInt) (brk + len)
-           Rowex.pp_value LEInt);
-     Atomic.set t.brk (brk + len);
-     Rowex.Addr.of_int_to_rdwr brk) *)
+    else begin
+      C.atomic_set_leuintnat memory 0 old_brk;
+      (* NOTE(dinosaure): we must replace [brk] to be sure that a next usage
+         of our rowex file will not fail with a SIGSEGV (because the current
+         [brk] farther than expected. *)
+      (* NOTE(dinosaure): the idea here is to "trap" our writers in this part of
+         the code. if, by mistake, one has finished in the meantime, it will
+         "count_down" (see [release_writer]) itself but will not participate in
+         the extension. a writer will create the "clatch" and wait for all the
+         others to fall into the trap as well. then, we will create an ivar and
+         our first writer will perform the extension while the others wait for
+         the result of this extension. *)
+      Log.debug (fun m -> m "start to extend our rowex file");
+      Miou.Mutex.lock writer.queue_locker;
+      match !(writer.clatch) with
+      | None ->
+          Log.debug (fun m ->
+              m "released writers: @[<hov>%a@]"
+                Fmt.(Dump.iter Set.iter (any "set") int)
+                !(writer.released_writers));
+          Log.debug (fun m ->
+              m "active writers: @[<hov>%a@]"
+                Fmt.(Dump.queue int)
+                writer.active_writers);
+          let active_writers = unsafe_count_active_writers writer in
+          assert (active_writers >= 1);
+          let clatch = Clatch.create (active_writers - 1) in
+          writer.clatch := Some clatch;
+          Miou.Mutex.unlock writer.queue_locker;
+          Log.debug (fun m ->
+              m "lucky you are %016x, start to wait %d writer(s)" writer.uid
+                active_writers);
+          Clatch.await clatch;
+          writer.clatch := None;
+          let result = Miou.Computation.create () in
+          Miou.Mutex.protect writer.extend_locker (fun () ->
+              writer.extend_result := Some result);
+          let new_filepath, _new_size =
+            System.copy_into_larger_filepath writer
+          in
+          Unix.rename new_filepath writer.filepath;
+          let memory = System.load_memory writer.filepath in
+          writer.memory <- memory;
+          Atomic.set writer.memory_from_t memory;
+          assert (Miou.Computation.try_return result memory);
+          Miou.Mutex.protect writer.extend_locker (fun () ->
+              writer.extend_result := None);
+          raise Retry_after_extension
+      | Some clatch ->
+          Miou.Mutex.unlock writer.queue_locker;
+          Log.debug (fun m -> m "writer %016x trapped" writer.uid);
+          Clatch.count_down clatch;
+          Clatch.await clatch;
+          let rec gimme_extend_ivar () =
+            let result =
+              Miou.Mutex.protect writer.extend_locker @@ fun () ->
+              !(writer.extend_result)
+            in
+            if Option.is_none result then gimme_extend_ivar ()
+            else Option.get result
+          in
+          let result = gimme_extend_ivar () in
+          let memory = Miou.Computation.await_exn result in
+          writer.memory <- memory;
+          raise Retry_after_extension
+    end
 
   let alloc writer ~kind len payloads =
     match get_free_cell writer ~len with
     | Some addr ->
-        let memory = Atomic.get writer.memory in
+        let memory = writer.memory in
         blitv payloads memory addr;
         if kind = `Node then
           C.atomic_set_leuintnat memory (addr + Rowex._header_owner) writer.uid;
@@ -351,9 +482,13 @@ module Garbage_collector = struct
     | None -> (
         ignore (sweep writer);
         match get_free_cell writer ~len with
-        | None -> really_alloc writer ~kind len payloads
+        | None -> (
+            try really_alloc writer ~kind len payloads
+            with Retry_after_extension ->
+              Log.debug (fun m -> m "retry an allocation");
+              really_alloc writer ~kind len payloads)
         | Some addr ->
-            let memory = Atomic.get writer.memory in
+            let memory = writer.memory in
             blitv payloads memory addr;
             if kind = `Node then
               C.atomic_set_leuintnat memory
@@ -362,7 +497,8 @@ module Garbage_collector = struct
             Rowex.Addr.of_int_to_rdwr addr)
 end
 
-let add_free_cell (rowex : t) ~addr ~len =
+(* NOTE(dinosaure): I think it's the same implementation than [unsafe_add_free_cell]... *)
+let unsafe_add_free_cell (rowex : t) ~addr ~len =
   Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" addr len);
   let () =
     try
@@ -375,9 +511,11 @@ let add_free_cell (rowex : t) ~addr ~len =
 let scan (rowex : t) =
   let memory = Atomic.get rowex.memory in
   let brk = C.atomic_get_leuintnat memory 0 in
+  if brk > Bigarray.Array1.dim memory then
+    Fmt.invalid_arg "The given ROWEX file is smaller than it says";
   let cur = ref (C.atomic_get_leuintnat memory size_of_word) in
   let collected = ref 0 in
-  Log.debug (fun m -> m "scan: start");
+  Log.debug (fun m -> m "scan: start (brk: %016x)" brk);
   while !cur < brk do
     Log.debug (fun m -> m "scan: %016x" !cur);
     let hdr = C.atomic_get_leuintnat memory !cur in
@@ -385,7 +523,7 @@ let scan (rowex : t) =
     | (0 | 1 | 2 | 3) as v ->
         let len = size_of_node v in
         if hdr land 1 = 1 then begin
-          add_free_cell rowex ~addr:!cur ~len;
+          unsafe_add_free_cell rowex ~addr:!cur ~len;
           incr collected
         end;
         cur := !cur + len
@@ -413,7 +551,6 @@ module Reader = struct
    fun { memory; _ } addr v ->
     Log.debug (fun m ->
         m "get        %016x : %a" (Addr.unsafe_to_int addr) pp_value v);
-    let memory = Atomic.get memory in
     match v with
     | OCaml_string -> C.get_ocaml_string memory (Addr.unsafe_to_int addr)
     | OCaml_string_length ->
@@ -426,7 +563,6 @@ module Reader = struct
    fun { memory; _ } addr k ->
     Log.debug (fun m ->
         m "atomic_get %016x : %a" (Addr.unsafe_to_int addr) pp_value k);
-    let memory = Atomic.get memory in
     match k with
     | Int8 -> C.atomic_get_uint8 memory (Addr.unsafe_to_int addr)
     | LEInt -> C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr)
@@ -520,7 +656,6 @@ module Writer = struct
     Log.debug (fun m ->
         m "atomic_set %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
           v pp_value k);
-    let memory = Atomic.get memory in
     match k with
     | Int8 -> C.atomic_set_uint8 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_set_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -541,7 +676,6 @@ module Writer = struct
     Log.debug (fun m ->
         m "fetch_add  %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
           v pp_value k);
-    let memory = Atomic.get memory in
     match k with
     | LEInt16 -> C.atomic_fetch_add_leuint16 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_fetch_add_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -553,7 +687,6 @@ module Writer = struct
     Log.debug (fun m ->
         m "fetch_sub  %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
           v pp_value k);
-    let memory = Atomic.get memory in
     match k with
     | LEInt16 -> C.atomic_fetch_sub_leuint16 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_fetch_sub_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -564,7 +697,6 @@ module Writer = struct
     Log.debug (fun m ->
         m "fetch_or   %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
           v pp_value k);
-    let memory = Atomic.get memory in
     match k with
     | LEInt -> C.atomic_fetch_or_leuintnat memory (Addr.unsafe_to_int addr) v
     | _ -> assert false
@@ -585,7 +717,6 @@ module Writer = struct
           (Atomic.get expected) pp_value k
           (pp_of_value ~prefer_hex:true k)
           desired pp_value k);
-    let memory = Atomic.get memory in
     match (k, weak) with
     | LEInt, true ->
         C.atomic_compare_exchange_weak memory (Addr.unsafe_to_int addr) expected
@@ -597,15 +728,12 @@ module Writer = struct
 
   let persist { memory; _ } (addr : 'c wr Addr.t) ~len =
     Log.debug (fun m -> m "persist    %016x (%d)" (Addr.unsafe_to_int addr) len);
-    let memory = Atomic.get memory in
     C.persist memory (Addr.unsafe_to_int addr) len
 
   let set_n48_key { memory; _ } (addr : 'c wr Addr.t) k c =
-    let memory = Atomic.get memory in
     C.set_n48_key memory (Addr.unsafe_to_int addr) k c
 
   let movnt64 { memory; _ } ~(dst : 'c wr Addr.t) src =
-    let memory = Atomic.get memory in
     C.movnt64 memory (Addr.unsafe_to_int dst) src
 
   let allocate t ~kind ?len payloads =
@@ -639,87 +767,95 @@ let exists (t : reader) = Rowex_rd.exists t t.root
 let remove (t : writer) = Rowex_wr.remove t t.root
 let insert (t : writer) = Rowex_wr.insert t t.root
 
-let make memory =
+let make ~filepath memory =
   C.atomic_set_leuintnat memory 0 (size_of_word * 2);
+  let clatch = ref None
+  and extend_result = ref None
+  and released_writers = ref Set.empty in
   let t : t =
     {
-      memory = Atomic.make memory
+      filepath
+    ; memory = Atomic.make memory
     ; root = Rowex.Addr.null
-    ; free = Hashtbl.create 0x100
-    ; free_cells = Atomic.make 0
-    ; free_locker = Miou.Mutex.create ()
     ; queue_locker = Miou.Mutex.create ()
     ; active_writers = Queue.create ()
-    ; released_writers = Set.empty
+    ; released_writers
+    ; clatch
+    ; free_locker = Miou.Mutex.create ()
+    ; free = Hashtbl.create 0x100
+    ; free_cells = Atomic.make 0
     ; older_active_writer = Atomic.make 0
     ; collected = Miou.Queue.create ()
+    ; extend_locker = Miou.Mutex.create ()
+    ; extend_result
     }
   in
-  let writer =
+  let writer : writer =
     {
-      memory = t.memory
-    ; root = t.root
+      filepath
+    ; free_locker = t.free_locker
     ; free = t.free
     ; free_cells = t.free_cells
-    ; free_locker = t.free_locker
+    ; older_active_writer = t.older_active_writer
     ; queue_locker = t.queue_locker
     ; active_writers = t.active_writers
-    ; released_writers = t.released_writers
+    ; released_writers
+    ; clatch
     ; collected = t.collected
-    ; older_active_writer = t.older_active_writer
+    ; extend_locker = t.extend_locker
+    ; extend_result
+    ; memory
+    ; memory_from_t = t.memory
     ; uid = Garbage_collector.gen ()
+    ; root = t.root
     }
   in
   let root = Rowex_wr.make writer in
   C.atomic_set_leuintnat memory size_of_word (Rowex.Addr.unsafe_to_int root);
   { t with root }
 
-let load memory =
+let load ~filepath memory =
   let root = C.atomic_get_leuintnat memory size_of_word in
-  let t =
+  let t : t =
     {
-      memory = Atomic.make memory
+      filepath
+    ; memory = Atomic.make memory
     ; root = Rowex.Addr.of_int_to_rdwr root
+    ; free_locker = Miou.Mutex.create ()
     ; free = Hashtbl.create 0x100
     ; free_cells = Atomic.make 0
-    ; free_locker = Miou.Mutex.create ()
-    ; queue_locker = Miou.Mutex.create ()
-    ; active_writers = Queue.create ()
-    ; released_writers = Set.empty
     ; older_active_writer = Atomic.make 0
     ; collected = Miou.Queue.create ()
+    ; queue_locker = Miou.Mutex.create ()
+    ; active_writers = Queue.create ()
+    ; released_writers = ref Set.empty
+    ; clatch = ref None
+    ; extend_locker = Miou.Mutex.create ()
+    ; extend_result = ref None
     }
   in
   scan t;
   t
 
 let from_system ~filepath =
-  if Sys.file_exists filepath then begin
-    let fd = Unix.openfile filepath Unix.[ O_RDWR; O_DSYNC ] 0o644 in
-    let stat = Unix.fstat fd in
-    let memory =
-      Unix.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout true
-        [| stat.Unix.st_size |]
-    in
-    Unix.close fd;
-    let memory = Bigarray.array1_of_genarray memory in
-    load memory
-  end
+  if Sys.file_exists filepath then load ~filepath (System.load_memory filepath)
   else
+    let open Unix in
+    let open Bigarray in
     let fd = Unix.openfile filepath Unix.[ O_RDWR; O_DSYNC; O_CREAT ] 0o644 in
-    Unix.ftruncate fd 31457280 (* 30M *);
-    let stat = Unix.fstat fd in
-    let memory =
-      Unix.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout true
-        [| stat.Unix.st_size |]
-    in
+    Unix.ftruncate fd 10485760 (* 10M *);
+    let len = (fstat fd).st_size in
+    let memory = Unix.map_file fd ~pos:0L char c_layout true [| len |] in
     Unix.close fd;
     let memory = Bigarray.array1_of_genarray memory in
-    make memory
+    make ~filepath memory
 
 let reader (rowex : t) =
-  { memory = rowex.memory; root = Rowex.Addr.to_rdonly rowex.root }
+  { memory = Atomic.get rowex.memory; root = Rowex.Addr.to_rdonly rowex.root }
 
+(* the goal here is to update [t.older_active_writer] to the one we get from
+   [t.active_writers]. We **really try** to be synchrone between the last
+   [t.active_writers] and [t.older_active_writer]. *)
 let rec update_older_activer_writer ?(backoff = Miou.Backoff.default) ?older
     (t : t) =
   let older =
@@ -744,6 +880,7 @@ let add_writer (t : t) ~uid =
     let older =
       Miou.Mutex.protect t.queue_locker @@ fun () ->
       Queue.push uid t.active_writers;
+      (* here, we take the previous writer before the apparition of our new one. *)
       Queue.peek t.active_writers
     in
     update_older_activer_writer ~older t
@@ -752,14 +889,15 @@ let add_writer (t : t) ~uid =
     Miou.Mutex.protect t.queue_locker @@ fun () ->
     Queue.push uid t.active_writers
 
-let rec clean_released_writers (t : t) =
-  if Set.is_empty t.released_writers = false then
+let rec unsafe_clean_released_writers (t : t) =
+  let rw = !(t.released_writers) in
+  if Set.is_empty rw = false then
     match Queue.peek t.active_writers with
     | older ->
-        if Set.mem older t.released_writers then begin
-          t.released_writers <- Set.remove older t.released_writers;
+        if Set.mem older rw then begin
+          t.released_writers := Set.remove older rw;
           ignore (Queue.pop t.active_writers);
-          clean_released_writers t
+          unsafe_clean_released_writers t
         end
     | exception Queue.Empty -> ()
 
@@ -767,18 +905,32 @@ let release_writer (t : t) ~uid =
   let older =
     Miou.Mutex.protect t.queue_locker @@ fun () ->
     Log.debug (fun m -> m "release writer %016x" uid);
+    (* here, if our writer has finished but another writer tries to extend the
+       file, we count down to prevent the other writer from waiting for us
+       indefinitely! *)
+    let () =
+      match !(t.clatch) with
+      | Some clatch ->
+          Log.debug (fun m -> m "writer %016x unlock our extension" uid);
+          Clatch.count_down clatch
+      | None -> ()
+    in
     match Queue.peek t.active_writers with
     | older ->
         if uid = older then begin
           assert (Queue.pop t.active_writers = uid);
+          (* here, we possibly have few writers ahead our writer [uid]. they
+             must have ended before us. *)
           Log.debug (fun m -> m "clean possible released writers");
-          clean_released_writers t;
+          unsafe_clean_released_writers t;
           Option.value ~default:0 (Queue.peek_opt t.active_writers)
         end
         else begin
           Log.debug (fun m ->
               m "it exists an older active writer (%016x) than %016x" older uid);
-          t.released_writers <- Set.add uid t.released_writers;
+          let rw = !(t.released_writers) in
+          let rw = Set.add uid rw in
+          t.released_writers := rw;
           older
         end
     | exception Queue.Empty ->
@@ -790,17 +942,22 @@ let release_writer (t : t) ~uid =
 let writer (t : t) fn =
   let writer : writer =
     {
-      memory = t.memory
-    ; root = t.root
+      filepath = t.filepath
+    ; free_locker = t.free_locker
     ; free = t.free
     ; free_cells = t.free_cells
-    ; free_locker = t.free_locker
+    ; older_active_writer = t.older_active_writer
     ; queue_locker = t.queue_locker
     ; active_writers = t.active_writers
     ; released_writers = t.released_writers
+    ; clatch = t.clatch
     ; collected = t.collected
-    ; older_active_writer = t.older_active_writer
+    ; extend_locker = t.extend_locker
+    ; extend_result = t.extend_result
+    ; memory = Atomic.get t.memory
+    ; memory_from_t = t.memory
     ; uid = Garbage_collector.gen ()
+    ; root = t.root
     }
   in
   add_writer t ~uid:writer.uid;
