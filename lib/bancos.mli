@@ -14,5 +14,5 @@ val lookup : t -> Rowex.key -> command
 val exists : t -> Rowex.key -> command
 val await : command -> result
 val is_running : command -> bool
-val openfile : ?readers:int -> ?writers:int -> string -> t
+val openfile : ?readers:int -> ?writers:int -> ?size:int -> string -> t
 val close : t -> unit

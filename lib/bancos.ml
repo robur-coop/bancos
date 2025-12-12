@@ -209,8 +209,8 @@ let gen =
   let v = Atomic.make 0 in
   fun () -> Atomic.fetch_and_add v 1
 
-let openfile ?(readers = 4) ?(writers = 2) filepath =
-  let part = Part.from_system ~filepath in
+let openfile ?(readers = 4) ?(writers = 2) ?size filepath =
+  let part = Part.from_system ?size filepath in
   let domains = Miou.Domain.all () in
   if List.length domains < readers + writers then
     Fmt.invalid_arg "We don't have enough domains for %d readers and %d writers"
