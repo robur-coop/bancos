@@ -857,7 +857,7 @@ let reader (rowex : t) =
 (* the goal here is to update [t.older_active_writer] to the one we get from
    [t.active_writers]. We **really try** to be synchrone between the last
    [t.active_writers] and [t.older_active_writer]. *)
-let rec update_older_activer_writer ?(backoff = Miou.Backoff.default) ?older
+let rec update_older_active_writer ?(backoff = Miou.Backoff.default) ?older
     (t : t) =
   let older =
     match older with
@@ -872,7 +872,7 @@ let rec update_older_activer_writer ?(backoff = Miou.Backoff.default) ?older
   if
     seen <> older
     && not (Atomic.compare_and_set t.older_active_writer seen older)
-  then update_older_activer_writer ~backoff:(Miou.Backoff.once backoff) t
+  then update_older_active_writer ~backoff:(Miou.Backoff.once backoff) t
 
 let add_writer (t : t) ~uid =
   Log.debug (fun m -> m "new writer %016x" uid);
@@ -884,7 +884,7 @@ let add_writer (t : t) ~uid =
       (* here, we take the previous writer before the apparition of our new one. *)
       Queue.peek t.active_writers
     in
-    update_older_activer_writer ~older t
+    update_older_active_writer ~older t
   end
   else
     Miou.Mutex.protect t.queue_locker @@ fun () ->
@@ -938,7 +938,7 @@ let release_writer (t : t) ~uid =
         Log.err (fun m -> m "we missed writer %016x" uid);
         assert false
   in
-  update_older_activer_writer ~older t
+  update_older_active_writer ~older t
 
 let writer (t : t) fn =
   let writer : writer =

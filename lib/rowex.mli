@@ -6,7 +6,20 @@ exception Duplicate
     atomically load and store values. This implementation wants to ensure 2
     things:
     - [insert] and [lookup] can be executed in {b true} parallelism
-    - persistence is ensured by required {i syscalls} *)
+    - persistence is ensured by required {i syscalls}
+
+    {2 A quick note about atomic operations.}
+
+    The "normal" model for our atomic operations is always the acquire/release
+    model for our variables. This corresponds to what a CPU can normally
+    consider if it complies with the TSO memory model (which is the case for an
+    [x86] processor). In the case of a CPU such as [ARM], it is necessary to
+    make this model explicit. However, there is an optimization where certain
+    writes can be relaxed. It is difficult to know the impact of such an
+    optimization: and to announce our ordering property as weak.
+
+    Thus, to simplify, we can consider that all loads have the acquire property
+    and all stores have the release property. *)
 
 type key = private string
 
@@ -80,6 +93,16 @@ module type S = sig
   *)
 
   val movnt64 : memory -> dst:'a wr Addr.t -> int -> unit t
+  (** [movnt64] is a special instruction that:
+      - must write bypassing the write cache
+      - must not load the page being written to in the cache
+
+      The goal here is that the write must be fundamentally persistent, but we
+      tolerate a cache miss if we try to read the modified page.
+
+      We tolerate this because [movnt64] is involved in creating a new node (and
+      therefore a new key insertion) that should not be read anytime soon. *)
+
   val set_n48_key : memory -> 'a wr Addr.t -> int -> int -> unit t
   val fetch_add : memory -> rdwr Addr.t -> (atomic, int) value -> int -> int t
   val fetch_or : memory -> rdwr Addr.t -> (atomic, int) value -> int -> int t

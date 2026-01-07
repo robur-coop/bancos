@@ -360,6 +360,11 @@ void dc_cvac_range(const void *ptr, uint64_t len) {
   }
 }
 
+/* Please note that the instruction below ensures that the changes made by the
+ * core are visible to others, but it does not guarantee that the [dc cvac] has
+ * completed successfully: we cannot guarantee effective persistence (and if
+ * the software crashes immediately afterward, the data may **not have been
+ * saved**). */
 void sfence() { __asm__ volatile("dmb ishst" ::: "memory"); }
 
 CAMLprim value caml_persist(value memory, value addr, value len) {

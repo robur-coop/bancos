@@ -17,6 +17,7 @@ depends: [
   "fpath" {>= "0.7.3"}
   "hxd" {>= "0.3.2"}
   "miou" {>= "0.2"}
+  "rowex" {= version}
 ]
 available:
   arch != "ppc64" & arch != "arm32" & arch != "x86_32" & arch != "s390x"

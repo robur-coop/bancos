@@ -49,9 +49,21 @@ int ml_ctz(intnat x) {
 
 CAMLprim value caml_ctz(value n) { return (Val_long(ml_ctz(Long_val(n)))); }
 
+#include <caml/alloc.h>
+
 uint64_t caml_uint64_of_uint(value v) { return (Unsigned_long_val(v)); }
 
+CAMLprim value
+caml_bytecode_uint64_of_uint(value v) {
+  return caml_copy_int64(Unsigned_long_val(v));
+}
+
 uint32_t caml_uint32_of_uint(value v) { return (Unsigned_long_val(v)); }
+
+CAMLprim value
+caml_bytecode_uint32_of_uint(value v) {
+  return caml_copy_int32(Unsigned_long_val(v));
+}
 
 #if defined(ART_SSE2)
 #include <emmintrin.h>

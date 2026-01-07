@@ -47,11 +47,11 @@ external bswap32 : int32 -> int32 = "%bswap_int32"
    primitives. *)
 
 external uint64_of_uint : int -> (int64[@unboxed])
-  = "bytecode_compilation_not_supported" "caml_uint64_of_uint"
+  = "caml_bytecode_uint64_of_uint" "caml_uint64_of_uint"
 [@@noalloc]
 
 external uint32_of_uint : int -> (int32[@unboxed])
-  = "bytecode_compilation_not_supported" "caml_uint32_of_uint"
+  = "caml_bytecode_uint32_of_uint" "caml_uint32_of_uint"
 [@@noalloc]
 
 let leintnat_to_string v =
