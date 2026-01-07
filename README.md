@@ -1,5 +1,22 @@
 # Bancos, a simple KV-store
 
+`bancos` is a KV store, meaning that it can associate a string with a number
+(which can refer to a value). This KV store is persistent (meaning that it is
+saved in a file or block device) and the structure can be manipulated by
+several programs in parallel:
+- the structure used is [ROWEX][rowex]
+- persistence comes from [P-ART][p-art]
+
+`bancos` is therefore the first step in a database system capable of inserting
+(in parallel) new values or searching (also in parallel) for existing values
+according to a key.
+
+The implementation of `bancos` does not depend on any particular scheduler, but
+we recommend using `bancos` with [miou][miou] to enable parallelization of
+readers and writers.
+
+## Tools
+
 A simple example:
 ```sh
 $ git clone https://github.com/robur-coop/bancos.git
