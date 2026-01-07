@@ -86,7 +86,7 @@ let do_wrs ~uid t wrs =
       Log.err (fun m -> m "[%02x] failed with %S" uid (Printexc.to_string exn))
 
 let do_rds t rds =
-  let reader = Part.reader t.part in
+  Part.reader t.part @@ fun reader ->
   let do_rd = function
     | Lookup (key, res) -> begin
         match Part.lookup reader key with

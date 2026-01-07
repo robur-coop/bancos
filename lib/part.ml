@@ -175,13 +175,13 @@ type t = {
   ; memory : memory Atomic.t
   ; root : Rowex.rdwr Rowex.Addr.t
   ; queue_locker : Miou.Mutex.t
-  ; active_writers : int Queue.t
-  ; released_writers : Set.t ref
+  ; active_processes : (int * [ `Wr | `Rd ]) Queue.t
+  ; released_processes : Set.t ref
   ; clatch : Clatch.t option ref
   ; free_locker : Miou.Mutex.t
   ; free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
-  ; older_active_writer : int Atomic.t
+  ; older_active_process : int Atomic.t
   ; collected : cell Miou.Queue.t
   ; extend_locker : Miou.Mutex.t
   ; extend_result : memory Miou.Computation.t option ref
@@ -194,11 +194,11 @@ type writer = {
   ; free_locker : Miou.Mutex.t
   ; free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
-  ; older_active_writer : int Atomic.t
+  ; older_active_process : int Atomic.t
   ; queue_locker : Miou.Mutex.t
   ; clatch : Clatch.t option ref
-  ; active_writers : int Queue.t
-  ; released_writers : Set.t ref
+  ; active_processes : (int * [ `Wr | `Rd ]) Queue.t
+  ; released_processes : Set.t ref
   ; collected : cell Miou.Queue.t
   ; extend_locker : Miou.Mutex.t
   ; extend_result : memory Miou.Computation.t option ref
@@ -354,10 +354,10 @@ module Garbage_collector = struct
     else None
 
   let can_we_sweep_it writer uid' =
-    let older_active_writer =
-      Atomic.get (Sys.opaque_identity writer.older_active_writer)
+    let older_active_process =
+      Atomic.get (Sys.opaque_identity writer.older_active_process)
     in
-    older_active_writer = 0 || uid' < older_active_writer
+    older_active_process = 0 || uid' < older_active_process
 
   let collect writer addr ~len ~uid =
     let addr = Rowex.Addr.unsafe_to_int addr in
@@ -388,9 +388,11 @@ module Garbage_collector = struct
   exception Retry_after_extension
 
   let unsafe_count_active_writers writer =
-    let rw = !(writer.released_writers) in
-    let fn acc uid = if Set.mem uid rw then acc else acc + 1 in
-    Queue.fold fn 0 writer.active_writers
+    let rw = !(writer.released_processes) in
+    let fn acc (uid, k) =
+      match k with `Wr when not (Set.mem uid rw) -> acc + 1 | _ -> acc
+    in
+    Queue.fold fn 0 writer.active_processes
 
   let really_alloc writer ~kind len payloads =
     let memory = writer.memory in
@@ -421,14 +423,6 @@ module Garbage_collector = struct
       Miou.Mutex.lock writer.queue_locker;
       match !(writer.clatch) with
       | None ->
-          Log.debug (fun m ->
-              m "released writers: @[<hov>%a@]"
-                Fmt.(Dump.iter Set.iter (any "set") int)
-                !(writer.released_writers));
-          Log.debug (fun m ->
-              m "active writers: @[<hov>%a@]"
-                Fmt.(Dump.queue int)
-                writer.active_writers);
           let active_writers = unsafe_count_active_writers writer in
           assert (active_writers >= 1);
           let clatch = Clatch.create (active_writers - 1) in
@@ -480,7 +474,7 @@ module Garbage_collector = struct
         if kind = `Node then
           C.atomic_set_leuintnat memory (addr + Rowex._header_owner) writer.uid;
         Rowex.Addr.of_int_to_rdwr addr
-    | None -> (
+    | None -> begin
         ignore (sweep writer);
         match get_free_cell writer ~len with
         | None -> (
@@ -495,7 +489,8 @@ module Garbage_collector = struct
               C.atomic_set_leuintnat memory
                 (addr + Rowex._header_owner)
                 writer.uid;
-            Rowex.Addr.of_int_to_rdwr addr)
+            Rowex.Addr.of_int_to_rdwr addr
+      end
 end
 
 (* NOTE(dinosaure): I think it's the same implementation than [unsafe_add_free_cell]... *)
@@ -772,20 +767,20 @@ let make ~filepath memory =
   C.atomic_set_leuintnat memory 0 (size_of_word * 2);
   let clatch = ref None
   and extend_result = ref None
-  and released_writers = ref Set.empty in
+  and released_processes = ref Set.empty in
   let t : t =
     {
       filepath
     ; memory = Atomic.make memory
     ; root = Rowex.Addr.null
     ; queue_locker = Miou.Mutex.create ()
-    ; active_writers = Queue.create ()
-    ; released_writers
+    ; active_processes = Queue.create ()
+    ; released_processes
     ; clatch
     ; free_locker = Miou.Mutex.create ()
     ; free = Hashtbl.create 0x100
     ; free_cells = Atomic.make 0
-    ; older_active_writer = Atomic.make 0
+    ; older_active_process = Atomic.make 0
     ; collected = Miou.Queue.create ()
     ; extend_locker = Miou.Mutex.create ()
     ; extend_result
@@ -797,10 +792,10 @@ let make ~filepath memory =
     ; free_locker = t.free_locker
     ; free = t.free
     ; free_cells = t.free_cells
-    ; older_active_writer = t.older_active_writer
+    ; older_active_process = t.older_active_process
     ; queue_locker = t.queue_locker
-    ; active_writers = t.active_writers
-    ; released_writers
+    ; active_processes = t.active_processes
+    ; released_processes
     ; clatch
     ; collected = t.collected
     ; extend_locker = t.extend_locker
@@ -825,11 +820,11 @@ let load ~filepath memory =
     ; free_locker = Miou.Mutex.create ()
     ; free = Hashtbl.create 0x100
     ; free_cells = Atomic.make 0
-    ; older_active_writer = Atomic.make 0
+    ; older_active_process = Atomic.make 0
     ; collected = Miou.Queue.create ()
     ; queue_locker = Miou.Mutex.create ()
-    ; active_writers = Queue.create ()
-    ; released_writers = ref Set.empty
+    ; active_processes = Queue.create ()
+    ; released_processes = ref Set.empty
     ; clatch = ref None
     ; extend_locker = Miou.Mutex.create ()
     ; extend_result = ref None
@@ -851,58 +846,58 @@ let from_system ?(size = 10485760) filepath =
     let memory = Bigarray.array1_of_genarray memory in
     make ~filepath memory
 
-let reader (rowex : t) =
-  { memory = Atomic.get rowex.memory; root = Rowex.Addr.to_rdonly rowex.root }
+(* This part is how we handle processes. *)
 
 (* the goal here is to update [t.older_active_writer] to the one we get from
    [t.active_writers]. We **really try** to be synchrone between the last
    [t.active_writers] and [t.older_active_writer]. *)
-let rec update_older_active_writer ?(backoff = Miou.Backoff.default) ?older
+let rec update_older_active_process ?(backoff = Miou.Backoff.default) ?older
     (t : t) =
   let older =
     match older with
     | Some older -> older
-    | None -> (
+    | None -> begin
         Miou.Mutex.protect t.queue_locker @@ fun () ->
-        match Queue.peek t.active_writers with
-        | older -> older
-        | exception Queue.Empty -> 0)
+        match Queue.peek t.active_processes with
+        | older, _ -> older
+        | exception Queue.Empty -> 0
+      end
   in
-  let seen = Atomic.get t.older_active_writer in
+  let seen = Atomic.get t.older_active_process in
   if
     seen <> older
-    && not (Atomic.compare_and_set t.older_active_writer seen older)
-  then update_older_active_writer ~backoff:(Miou.Backoff.once backoff) t
+    && not (Atomic.compare_and_set t.older_active_process seen older)
+  then update_older_active_process ~backoff:(Miou.Backoff.once backoff) t
 
-let add_writer (t : t) ~uid =
+let add_process (t : t) kind ~uid =
   Log.debug (fun m -> m "new writer %016x" uid);
-  let set = Atomic.compare_and_set t.older_active_writer 0 uid in
+  let set = Atomic.compare_and_set t.older_active_process 0 uid in
   if not set then begin
-    let older =
+    let older, _ =
       Miou.Mutex.protect t.queue_locker @@ fun () ->
-      Queue.push uid t.active_writers;
+      Queue.push (uid, kind) t.active_processes;
       (* here, we take the previous writer before the apparition of our new one. *)
-      Queue.peek t.active_writers
+      Queue.peek t.active_processes
     in
-    update_older_active_writer ~older t
+    update_older_active_process ~older t
   end
   else
     Miou.Mutex.protect t.queue_locker @@ fun () ->
-    Queue.push uid t.active_writers
+    Queue.push (uid, kind) t.active_processes
 
-let rec unsafe_clean_released_writers (t : t) =
-  let rw = !(t.released_writers) in
+let rec unsafe_clean_released_processes (t : t) =
+  let rw = !(t.released_processes) in
   if Set.is_empty rw = false then
-    match Queue.peek t.active_writers with
-    | older ->
+    match Queue.peek t.active_processes with
+    | older, _ ->
         if Set.mem older rw then begin
-          t.released_writers := Set.remove older rw;
-          ignore (Queue.pop t.active_writers);
-          unsafe_clean_released_writers t
+          t.released_processes := Set.remove older rw;
+          ignore (Queue.pop t.active_processes);
+          unsafe_clean_released_processes t
         end
     | exception Queue.Empty -> ()
 
-let release_writer (t : t) ~uid =
+let release_process (t : t) kind ~uid =
   let older =
     Miou.Mutex.protect t.queue_locker @@ fun () ->
     Log.debug (fun m -> m "release writer %016x" uid);
@@ -910,35 +905,47 @@ let release_writer (t : t) ~uid =
        file, we count down to prevent the other writer from waiting for us
        indefinitely! *)
     let () =
-      match !(t.clatch) with
-      | Some clatch ->
+      match (kind, !(t.clatch)) with
+      | `Wr, Some clatch ->
           Log.debug (fun m -> m "writer %016x unlock our extension" uid);
           Clatch.count_down clatch
-      | None -> ()
+      | _ -> ()
     in
-    match Queue.peek t.active_writers with
-    | older ->
+    match Queue.peek t.active_processes with
+    | older, _ ->
         if uid = older then begin
-          assert (Queue.pop t.active_writers = uid);
+          assert (fst (Queue.pop t.active_processes) = uid);
           (* here, we possibly have few writers ahead our writer [uid]. they
              must have ended before us. *)
           Log.debug (fun m -> m "clean possible released writers");
-          unsafe_clean_released_writers t;
-          Option.value ~default:0 (Queue.peek_opt t.active_writers)
+          unsafe_clean_released_processes t;
+          let older = Queue.peek_opt t.active_processes in
+          let older = Option.map fst older in
+          Option.value ~default:0 older
         end
         else begin
           Log.debug (fun m ->
               m "it exists an older active writer (%016x) than %016x" older uid);
-          let rw = !(t.released_writers) in
+          let rw = !(t.released_processes) in
           let rw = Set.add uid rw in
-          t.released_writers := rw;
+          t.released_processes := rw;
           older
         end
     | exception Queue.Empty ->
         Log.err (fun m -> m "we missed writer %016x" uid);
         assert false
   in
-  update_older_active_writer ~older t
+  update_older_active_process ~older t
+
+let reader (t : t) fn =
+  let uid = Garbage_collector.gen () in
+  add_process t `Rd ~uid;
+  let reader =
+    { memory = Atomic.get t.memory; root = Rowex.Addr.to_rdonly t.root }
+  in
+  let res = try Ok (fn reader) with exn -> Error exn in
+  release_process t `Rd ~uid;
+  match res with Ok value -> value | Error exn -> raise exn
 
 let writer (t : t) fn =
   let writer : writer =
@@ -947,10 +954,10 @@ let writer (t : t) fn =
     ; free_locker = t.free_locker
     ; free = t.free
     ; free_cells = t.free_cells
-    ; older_active_writer = t.older_active_writer
+    ; older_active_process = t.older_active_process
     ; queue_locker = t.queue_locker
-    ; active_writers = t.active_writers
-    ; released_writers = t.released_writers
+    ; active_processes = t.active_processes
+    ; released_processes = t.released_processes
     ; clatch = t.clatch
     ; collected = t.collected
     ; extend_locker = t.extend_locker
@@ -961,7 +968,7 @@ let writer (t : t) fn =
     ; root = t.root
     }
   in
-  add_writer t ~uid:writer.uid;
+  add_process t `Wr ~uid:writer.uid;
   let res =
     try Ok (fn writer)
     with exn ->
@@ -970,5 +977,5 @@ let writer (t : t) fn =
             (Printexc.to_string exn));
       Error exn
   in
-  release_writer t ~uid:writer.uid;
+  release_process t `Wr ~uid:writer.uid;
   res

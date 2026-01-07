@@ -7,21 +7,22 @@ type command =
 let execute ?(quiet = false) commands filepath size =
   Miou.run ~domains:0 @@ fun () ->
   let t = Part.from_system ~size filepath in
-  let reader = Part.reader t in
   let rec go n =
     match commands () with
     | None -> if not quiet then Fmt.pr "db: %d action(s) committed\n%!" n
     | Some Noop -> go n
-    | Some (Lookup key) -> begin
-        match Part.lookup reader key with
-        | value ->
-            if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
-            Logs.info (fun m -> m "%S => %d" (key :> string) value);
-            go (succ n)
-        | exception Not_found ->
-            Logs.err (fun m -> m "%S does not exist" (key :> string));
-            raise Not_found
-      end
+    | Some (Lookup key) ->
+        let () =
+          Part.reader t @@ fun reader ->
+          match Part.lookup reader key with
+          | value ->
+              if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
+              Logs.info (fun m -> m "%S => %d" (key :> string) value)
+          | exception Not_found ->
+              Logs.err (fun m -> m "%S does not exist" (key :> string));
+              raise Not_found
+        in
+        go (succ n)
     | Some (Insert (key, value)) ->
         let[@warning "-8"] (Ok ()) =
           Part.writer t @@ fun writer ->
