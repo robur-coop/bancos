@@ -743,7 +743,7 @@ module Make (S : S) = struct
         let* () = atomic_set m pk Value.int8 ccount in
         let* _ = fetch_add m A.(addr + _header_compact_count) Value.leint16 1 in
         let* _ = fetch_add m A.(addr + _header_count) Value.leint16 1 in
-        return false
+        return true
 
   let add_child_n16 m (N16 addr) k v flush =
     let* ccount = get_compact_count m addr in
