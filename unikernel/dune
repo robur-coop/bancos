@@ -1,0 +1,6 @@
+(library
+ (name mpart)
+ (libraries rowex mkernel cachet.wr)
+(foreign_stubs
+  (language c)
+  (names mpart)))
