@@ -19,9 +19,13 @@ depends: [
   "miou" {>= "0.2"}
   "re"
   "rowex" {= version}
+  "cachet"
 ]
 available:
   arch != "ppc64" & arch != "arm32" & arch != "x86_32" & arch != "s390x"
 build: ["dune" "build" "-p" name "-j" jobs]
 run-test: ["dune" "runtest" "-p" name "-j" jobs]
 dev-repo: "git+https://github.com/robur-coop/bancos.git"
+pin-depends: [
+  "cachet.dev" "git+https://github.com/robur-coop/cachet.git#022b1734a2b906bcabeaccc02a30f233cb574e23"
+]

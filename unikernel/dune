@@ -1,5 +1,6 @@
 (library
  (name mpart)
+ (public_name bancos.mpart)
  (libraries rowex mkernel cachet.wr)
  (foreign_stubs
   (language c)
