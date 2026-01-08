@@ -44,7 +44,14 @@ let anchor = Unix.gettimeofday ()
 let now () = Unix.gettimeofday () -. anchor
 let () = Logs_threaded.enable ()
 
-let reporter ppf =
+let reporter sources ppf =
+  let re = Option.map Re.compile sources in
+  let print src =
+    let some re =
+      (Fun.negate List.is_empty) (Re.matches re (Logs.Src.name src))
+    in
+    Option.fold ~none:true ~some re
+  in
   let report src level ~over k msgf =
     let k _ =
       over ();
@@ -60,18 +67,49 @@ let reporter ppf =
         Fmt.(styled `Magenta (fmt "%20s"))
         (Logs.Src.name src)
     in
-    msgf @@ fun ?header ?tags fmt -> with_metadata header tags k ppf fmt
+    match (level, print src) with
+    | Logs.Debug, false -> k ()
+    | _, true | _ ->
+        msgf @@ fun ?header ?tags fmt -> with_metadata header tags k ppf fmt
   in
   { Logs.report }
 
-let setup_logs utf_8 style_renderer level =
+let regexp : (string * [ `None | `Re of Re.t ]) Arg.conv =
+  let parser str =
+    match Re.Pcre.re str with
+    | re -> Ok (str, `Re re)
+    | exception _ -> error_msgf "Invalid PCRegexp: %S" str
+  in
+  let pp ppf (str, _) = Fmt.string ppf str in
+  Arg.conv (parser, pp)
+
+let sources =
+  let doc = "A regexp (PCRE syntax) to identify which log we print." in
+  let open Arg in
+  value & opt_all regexp [ ("", `None) ] & info [ "l" ] ~doc ~docv:"REGEXP"
+
+let setup_sources = function
+  | [ (_, `None) ] -> None
+  | res ->
+      let res = List.map snd res in
+      let res =
+        List.fold_left
+          (fun acc -> function `Re re -> re :: acc | _ -> acc)
+          [] res
+      in
+      Some (Re.alt res)
+
+let setup_sources = Term.(const setup_sources $ sources)
+
+let setup_logs utf_8 style_renderer sources level =
   Fmt_tty.setup_std_outputs ~utf_8 ?style_renderer ();
   Logs.set_level level;
-  let reporter = reporter Fmt.stderr in
+  let reporter = reporter sources Fmt.stderr in
   Logs.set_reporter reporter;
   Option.is_none level
 
-let term_setup_logs = Term.(const setup_logs $ utf_8 $ renderer $ verbosity)
+let term_setup_logs =
+  Term.(const setup_logs $ utf_8 $ renderer $ setup_sources $ verbosity)
 
 let bytes_of_string s =
   let s = String.trim s in
