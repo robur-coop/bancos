@@ -3,6 +3,88 @@ let src = Logs.Src.create "gc"
 module Log = (val Logs.src_log src : Logs.LOG)
 module Set = Set.Make (Int)
 
+(* This garbage collector is a ‘mark-and-sweep’ garbage collector whose
+   allocation is protected by a global lock between all writers.
+   - [get_free_cell] is the first attempt to allocate a memory area, accessed
+     with the protection of our mutex [free_locker]. This function consists of
+     reusing unused cells.
+   - If there are no unused areas, we ‘sweep’, i.e. we look at the cells that
+     have been collected and try [get_free_cell] again.
+   - If we still don't have any available cells, we ‘really allocate’ by moving
+     the boundary of our segment ([brk]).
+   - If we cannot move [brk], we end up in the worst case scenario: having to
+     extend (if possible) our segment (which consists of creating a new segment,
+     copying the old one and then working on the new one).
+
+   Sweep
+
+   Rowex is based on a fairly simple memory model, where data is created by a
+   given task (identified by a number, which simply increments, allowing tasks
+   to be ordered from oldest to most recent). According to the Rowex design,
+   once allocated, this cell is reachable by the task that allocated it, as
+   well as all tasks prior to the one that created the cell.
+
+   Thus, if a cell is marked as free, we must "wait" until the oldest active
+   task is more recent than the one that marked the cell. If this is the case,
+   then no active task can now reach this cell, and we can therefore consider
+   it to be truly free.
+
+   A collected cell is therefore associated with the identifier of the task
+   that requested the GC to collect it. Then, during a "sweep" phase, all
+   collected cells are scanned and those that meet this predicate are swept:
+   [cell.uid < oldest_active_task_uid]. These cells are then added to our [free]
+   table (protected by a mutex) to be available when a task wishes to allocate.
+
+   Collect
+
+   The collection occurs when a task wants to delete a cell. This operation is
+   very simple and consists of adding the cell to be collected to an (atomic)
+   queue. We keep track of the task that wanted to delete this cell, and as
+   long as there are tasks that predate it, we keep the cell in our queue. It
+   is during a sweep and when the predicate is satisfied that we can consider
+   the cell to be truly free.
+
+   Extension of our [brk]
+
+   It may happen that there are no free cells. In this case, we move the
+   boundary of our segment in order to allocate a new cell: we move the [brk].
+   The format of our rowex file consists of having our [brk] at offset [0], the
+   root of our tree at offset [size_of_word], and then our rowex (i.e. at
+   offset [size_of_word * 2]).
+
+   Extension of our data-segment
+
+   The worst case scenario is when the [brk] can no longer be moved. In this
+   case, we need to extend our segment. The extension is not part of the GC,
+   but the latter creates a situation where such an extension can be made.
+
+   When a task cannot allocate, it will set up a "trap" for all tasks (that
+   want to write). It will then wait for all these tasks to "release"
+   (terminate) or fall into our trap. We can do this thanks to [Clatch]
+   (Counted down latch).
+
+   In other words, the extension takes effect once all tasks have finished or
+   fallen into the trap:
+   - if a new task attempts to appear, it is not counted by our [clatch] (since
+     it was created before it appeared) and will wait for the extension
+   - if a task ends, it is counted down from the [clatch]
+   - it is possible that a task may continue to allocate even if another task
+     has set up our trap. This is not a problem because if this task continues,
+     it will eventually either finish or want to allocate again (and may have
+     fallen into our trap). But in any case, the task that set the trap will
+     still be waiting and the extension will still not have started. We say that
+     tasks "converge" towards our trap.
+
+   Readers are a special case because they do not allocate. It does not matter
+   whether they are working on the new version or the old one. However, they
+   are important in determining whether cells can be "swept" or not (which is
+   why they are counted when we want to know "the oldest active task").
+
+   Once the writing tasks have fallen into our trap, we can start creating a
+   new segment, copy the old one onto the new one (knowing that no tasks can
+   write to it at the same time) and rework this new segment.
+*)
+
 module Clatch = struct
   type t = {
       mutex : Miou.Mutex.t
@@ -46,6 +128,12 @@ type 'mem t = {
   ; mutable memory : 'mem
   ; memory_from_t : 'mem Atomic.t
 }
+
+(* NOTE(dinosaure): The use of [ref] here is important because these are values
+   that must be shared between tasks. In particular, we need to make a copy of
+   [t] for each new task (see [with_memory]). We therefore ensure that we copy
+   the pointer to these values rather than the values themselves (and thus,
+   they are shared between all our tasks). *)
 
 type uid = int
 
