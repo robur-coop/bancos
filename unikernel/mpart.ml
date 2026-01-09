@@ -69,38 +69,43 @@ module C = struct
     Bytes.blit_string str 0 buf 0 16
 
   let atomic_fetch_add_leuint16 t off v =
-    let v' = v + Cachet_wr.get_uint16_le t.wr off in
-    Cachet_wr.set_uint16_le t.wr off v';
+    let v' = Cachet_wr.get_uint16_le t.wr off in
+    Cachet_wr.set_uint16_le t.wr off (v' + v);
     v'
 
   let atomic_fetch_sub_leuint16 t off v =
-    let v' = v - Cachet_wr.get_uint16_le t.wr off in
-    Cachet_wr.set_uint16_le t.wr off v';
+    let v' = Cachet_wr.get_uint16_le t.wr off in
+    Cachet_wr.set_uint16_le t.wr off (v' - v);
     v'
 
   let atomic_fetch_add_leuintnat t off v =
-    let v' = v + int63_to_int (Cachet_wr.get_int64_le t.wr off) in
-    Cachet_wr.set_int64_le t.wr off (Int64.of_int v');
+    let v' = Cachet_wr.get_int64_le t.wr off in
+    let v' = int63_to_int v' in
+    Cachet_wr.set_int64_le t.wr off (Int64.of_int (v' + v));
     v'
 
   let atomic_fetch_sub_leuintnat t off v =
-    let v' = v - int63_to_int (Cachet_wr.get_int64_le t.wr off) in
-    Cachet_wr.set_int64_le t.wr off (Int64.of_int v');
+    let v' = Cachet_wr.get_int64_le t.wr off in
+    let v' = int63_to_int v' in
+    Cachet_wr.set_int64_le t.wr off (Int64.of_int (v' - v));
     v'
 
   let pause_intrinsic () = Miou.yield ()
 
   let atomic_compare_exchange_strong t off expected desired =
     let seen = int63_to_int (Cachet_wr.get_int64_le t.wr off) in
-    Atomic.compare_and_set expected seen desired
+    let set = Atomic.compare_and_set expected seen desired in
+    if set then Cachet_wr.set_int64_le t.wr off (Int64.of_int desired);
+    set
 
   let atomic_compare_exchange_weak = atomic_compare_exchange_strong
   let get_leint31 t off = int32_to_int (Cachet_wr.get_int32_le t.wr off)
   let get_leintnat t off = int63_to_int (Cachet_wr.get_int64_le t.wr off)
 
   let atomic_fetch_or_leuintnat t off v =
-    let v' = v lor int63_to_int (Cachet_wr.get_int64_le t.wr off) in
-    Cachet_wr.set_int64_le t.wr off (Int64.of_int v');
+    let v' = Cachet_wr.get_int64_le t.wr off in
+    let v' = int63_to_int v' in
+    Cachet_wr.set_int64_le t.wr off (Int64.of_int (v' lor v));
     v'
 
   let get_ocaml_string_length t off =
@@ -113,7 +118,18 @@ module C = struct
   let get_ocaml_string t off =
     let len = get_ocaml_string_length t off in
     let buf = Bytes.create len in
-    Cachet.blit_to_bytes t.rd ~src_off:(off + 8) buf ~dst_off:0 ~len;
+    let len0 = len land 3 in
+    let len1 = len asr 2 in
+    for i = 0 to len1 - 1 do
+      let i = i * 4 in
+      let v = Cachet_wr.get_int32_ne t.wr (off + 8 + i) in
+      Bytes.set_int32_le buf i v
+    done;
+    for i = 0 to len0 - 1 do
+      let i = (len1 * 4) + i in
+      let v = Cachet_wr.get_uint8 t.wr (off + 8 + i) in
+      Bytes.set_uint8 buf i v
+    done;
     Bytes.unsafe_to_string buf
 
   let repeat n fn =
@@ -433,7 +449,7 @@ let make blk =
       | [] -> ()
       | bstr :: rest ->
           Mkernel.Block.atomic_write blk ~src_off:0 ~dst_off:pos bstr;
-          go (pos + (1 lsl pagesize)) rest
+          go (pos + pagesize) rest
     in
     go pos bstrs
   in
@@ -451,6 +467,7 @@ let make blk =
   let writer = { gc; root = Rowex.Addr.null } in
   let root = Rowex_wr.make writer in
   C.atomic_set_leuintnat m 8 (Rowex.Addr.unsafe_to_int root);
+  Cachet_wr.commit wr;
   { gc; root }
 
 let reader t fn =
