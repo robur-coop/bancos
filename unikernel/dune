@@ -1,7 +1,7 @@
 (library
  (name mpart)
  (public_name bancos.mpart)
- (libraries rowex mkernel cachet.wr)
+ (libraries rowex mkernel cachet.wr bancos.gc)
  (foreign_stubs
   (language c)
   (names mpart)))
