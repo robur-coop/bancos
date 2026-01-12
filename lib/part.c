@@ -425,7 +425,7 @@ CAMLprim value caml_get_ocaml_string(value memory, value addr) {
   CAMLlocal1(res);
 
   const uint8_t *v = memory_uint8_off(memory, addr);
-  res = caml_copy_string(v + sizeof(uintnat));
+  res = caml_copy_string((const char *) v + sizeof(uintnat));
 
   CAMLreturn(res);
 }
