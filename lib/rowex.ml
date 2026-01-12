@@ -1,6 +1,7 @@
 let () = Printexc.record_backtrace true
 
 exception Duplicate
+exception Too_many_retries
 
 let ( .![] ) = String.unsafe_get
 (* XXX(dinosaure): see [art.ml] about this unsafe access. *)
@@ -518,7 +519,10 @@ module Make (S : S) = struct
     | 1 -> n16_any_child m addr
     | 2 -> n48_any_child m addr
     | 3 -> n256_any_child m addr
-    | _ -> assert false
+    | n ->
+        Log.err (fun m ->
+            m "Invalid node at %016x (type: %d)" (A.unsafe_to_int addr) n);
+        assert false
 
   let rec minimum : memory -> ro A.t -> ro A.t t =
    fun m addr ->
@@ -811,10 +815,12 @@ module Make (S : S) = struct
   [@@inline]
 
   let rec until_is_locked m addr version retries =
-    if retries > 1000 then
+    if retries > 1_000_000 then begin
       Log.warn (fun m ->
           m "%016x locked for a too long time (%d)" (Addr.unsafe_to_int addr)
             retries);
+      raise Too_many_retries
+    end;
     if version land 0b10 = 0b10 then
       let* () = pause_intrinsic () in
       let* version = atomic_get m A.(addr + _header_kind) Value.leintnat in
@@ -836,14 +842,17 @@ module Make (S : S) = struct
           Value.leintnat (Atomic.make version) (version + 0b10)
       in
       if not res then write_lock_or_restart m addr need_to_restart
-      else
-        return (Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr)))
+      else begin
+        Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr));
+        return ()
+      end
   [@@inline]
 
   let write_unlock_obsolete m addr =
     fetch_add m A.(addr + _header_kind) Value.leintnat 0b11
 
-  let lock_version_or_restart m addr version need_to_restart =
+  let lock_version_or_restart m addr need_to_restart =
+    let* version = get_version m addr in
     if version land 0b10 = 0b10 || version land 1 = 1 then begin
       need_to_restart := true;
       return version
@@ -1214,21 +1223,21 @@ module Make (S : S) = struct
     let* res =
       if prefix_count + level != depth then begin
         let need_to_recover = ref false in
-        let* v = get_version m addr in
-        let* _ = lock_version_or_restart m addr v need_to_recover in
+        let* _ = lock_version_or_restart m addr need_to_recover in
         let* prefix, prefix_count =
           if !need_to_recover = false then begin
-            Log.debug (fun m -> m "insertion: inconsistent state");
+            Log.warn (fun m ->
+                m "insertion: inconsistent state at %016x" (addr :> int));
             let dis = if depth > level then depth - level else level - depth in
             let* kr = minimum_key m addr in
-            let prefix_count = dis in
             let prefix = Bytes.make _prefix '\000' in
-            for i = 0 to min dis _prefix - 1 do
+            for i = 0 to Int.min dis _prefix - 1 do
               Bytes.set prefix i kr.![level + i]
             done;
             let prefix = Bytes.unsafe_to_string prefix in
             Log.debug (fun m ->
                 m "insertion: set prefix to %S:%d" prefix prefix_count);
+            let prefix_count = dis in
             let* () = set_prefix m addr ~prefix ~prefix_count true in
             let* () = write_unlock m addr in
             return (prefix, prefix_count)
@@ -1266,7 +1275,7 @@ module Make (S : S) = struct
                     let* kt = Lazy.force kt in
                     let non_matching_prefix = Bytes.make _prefix '\000' in
                     let top =
-                      min (prefix_count - (level - level') - 1) _prefix
+                      Int.min (prefix_count - (level - level') - 1) _prefix
                     in
                     for j = 0 to top - 1 do
                       Bytes.set non_matching_prefix j kt.![level + j + 1]
@@ -1338,33 +1347,36 @@ module Make (S : S) = struct
       done;
       if !idx < off then raise Duplicate)
 
-  let rec insert m root key leaf =
+  let insert m root key leaf =
     let retries = ref 0 in
+    let null = A.(of_int_to_rdwr (null :> int)) in
     let rec restart () =
       incr retries;
-      if !retries > 100 then
+      if !retries > 1_000_000 then begin
         Log.warn (fun m -> m "Too many retries to insert %S" (key :> string));
-      Log.debug (fun m -> m "insert: retry");
-      (insert [@tailcall]) m root key leaf
+        raise Too_many_retries
+      end;
+      Log.debug (fun m -> m "insert: retry (%d)" !retries);
+      let* () = S.pause_intrinsic () in
+      (_insert [@tailcall]) null root null '\000' 0
     and _insert node next_node _parent kn level =
       let need_to_restart = ref false in
       let parent = node in
       let kp = kn in
       let node = next_node in
-      let* v = get_version m node in
       Log.debug (fun m ->
           m "insertion: walk into %016x and check prefix" (A.unsafe_to_int node));
       let* res = check_prefix_pessimistic m node ~key level in
       match res with
       | Skipped_level ->
-          Log.debug (fun m -> m "insertion: skipped level");
+          Log.warn (fun m -> m "insertion: skipped level");
           restart ()
       | No_match { non_matching_key; non_matching_prefix; level = next_level }
         ->
           Log.debug (fun m ->
               m "insertion: no match %a %S (%d => %d)" pp_char non_matching_key
                 non_matching_prefix level next_level);
-          let* _ = lock_version_or_restart m node v need_to_restart in
+          let* _ = lock_version_or_restart m node need_to_restart in
           if !need_to_restart then (restart [@tailcall]) ()
           else
             let* prefix, _ = get_prefix m node in
@@ -1408,7 +1420,7 @@ module Make (S : S) = struct
           let kn = key.![level] in
           let* next_node = find_child m node kn in
           if Addr.is_null next_node then
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let () =
@@ -1421,7 +1433,7 @@ module Make (S : S) = struct
               if !need_to_restart then (restart [@tailcall]) () else return ()
           else if (next_node :> int) land 1 = 1 then begin
             Log.debug (fun m -> m "insertion: the next node is a leaf");
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let* key' =
@@ -1460,7 +1472,6 @@ module Make (S : S) = struct
           else
             _insert node (Addr.unsafe_to_rdwr next_node) parent kn (succ level)
     in
-    let null = A.(of_int_to_rdwr (null :> int)) in
     _insert null root null '\000' 0
 
   let _n4_get_second_child m addr key =
@@ -1711,8 +1722,7 @@ module Make (S : S) = struct
         end
       end
       else begin
-        let* v_child = get_version m second_node in
-        let* _ = lock_version_or_restart m second_node v_child restart in
+        let* _ = lock_version_or_restart m second_node restart in
         if !restart then
           let* () = write_unlock m node in
           return Restart
@@ -1764,7 +1774,7 @@ module Make (S : S) = struct
             else return ()
           end
           else if (next_node :> int) land 1 = 1 then begin
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             Log.debug (fun m ->
                 m "remove: start to rebalance (restart? %b)" !need_to_restart);
             if !need_to_restart then (restart [@tailcall]) ()
