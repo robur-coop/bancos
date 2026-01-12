@@ -477,7 +477,9 @@ module Writer = struct
     let { W.uid; _ } = Gc.memory t.gc in
     Garbage_collector.collect t.gc uid addr ~len ~uid
 
-  let pause_intrinsic () = C.pause_intrinsic ()
+  let pause_intrinsic () =
+    C.pause_intrinsic ();
+    Miou.yield ()
 end
 
 module Rowex_rd = Rowex.Make (Reader)
