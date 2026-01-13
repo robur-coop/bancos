@@ -404,8 +404,8 @@ module Writer = struct
       | None -> List.fold_left (fun a str -> a + String.length str) 0 payloads
     in
     Log.debug (fun m -> m "alloctate %3d" len);
-    let { W.uid; _ } = Gc.memory t.gc in
-    Garbage_collector.alloc t.gc ~writer:uid ~kind len payloads
+    let { W.uid = writer; _ } = Gc.memory t.gc in
+    Garbage_collector.alloc t.gc ~writer ~kind len payloads
 
   let delete (t : memory) (addr : 'a Addr.t) len =
     Log.debug (fun m -> m "delete     %016x %d" (Addr.unsafe_to_int addr) len);
@@ -414,8 +414,8 @@ module Writer = struct
   let collect (t : memory) addr ~len ~uid =
     Log.debug (fun m ->
         m "collect    %016x %d %d" (Addr.unsafe_to_int addr) len uid);
-    let { W.uid; _ } = Gc.memory t.gc in
-    Garbage_collector.collect t.gc uid addr ~len ~uid
+    let { W.uid = current; _ } = Gc.memory t.gc in
+    Garbage_collector.collect t.gc current addr ~len ~uid
 
   let pause_intrinsic () = C.pause_intrinsic ()
 end

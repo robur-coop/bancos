@@ -117,6 +117,7 @@ module Garbage_collector = Gc.Make (W)
 type memory = Bstr.t
 type writer = { gc : W.memory Gc.t; root : Rowex.rdwr Rowex.Addr.t }
 type reader = { memory : Bstr.t; root : Rowex.ro Rowex.Addr.t }
+type uid = Gc.uid
 
 let size_of_word = Sys.word_size / 8
 
@@ -474,8 +475,8 @@ module Writer = struct
   let collect (t : memory) addr ~len ~uid =
     Log.debug (fun m ->
         m "collect    %016x %d %d" (Addr.unsafe_to_int addr) len uid);
-    let { W.uid; _ } = Gc.memory t.gc in
-    Garbage_collector.collect t.gc uid addr ~len ~uid
+    let { W.uid = current; _ } = Gc.memory t.gc in
+    Garbage_collector.collect t.gc current addr ~len ~uid
 
   let pause_intrinsic () =
     C.pause_intrinsic ();

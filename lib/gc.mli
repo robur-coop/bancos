@@ -32,7 +32,7 @@ module Make (C : S) : sig
     -> string list
     -> Rowex.rdwr Rowex.Addr.t
 
-  val collect : 'mem t -> uid -> 'cap Rowex.Addr.t -> len:int -> uid:uid -> unit
+  val collect : 'mem t -> uid -> 'cap Rowex.Addr.t -> len:int -> uid:int -> unit
   val delete : 'mem t -> 'cap Rowex.Addr.t -> int -> unit
   val unsafe_delete : 'mem t -> 'cap Rowex.Addr.t -> int -> unit
   val add_process : 'mem t -> [ `Wr | `Rd ] -> uid
