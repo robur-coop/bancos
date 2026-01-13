@@ -367,11 +367,12 @@ module Make (C : S) = struct
     | None -> begin
         ignore (sweep t writer);
         match get_free_cell t ~len with
-        | None -> (
+        | None -> begin
             try really_alloc t writer ~kind len payloads
             with Retry_after_extension ->
               Log.debug (fun m -> m "retry an allocation");
-              really_alloc t writer ~kind len payloads)
+              really_alloc t writer ~kind len payloads
+          end
         | Some addr ->
             blitv payloads t.memory addr;
             if kind = `Node then

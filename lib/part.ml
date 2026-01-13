@@ -528,7 +528,7 @@ let reader (t : t) fn =
   let uid = Garbage_collector.add_process t.gc `Rd in
   let root = Rowex.Addr.to_rdonly t.root in
   let reader = { memory = (Gc.atomic_memory t.gc).W.memory; root } in
-  let res = try Ok (fn reader) with exn -> Error exn in
+  let res = try Ok (fn ~uid reader) with exn -> Error exn in
   Garbage_collector.release_process t.gc `Rd ~uid;
   match res with Ok value -> value | Error exn -> raise exn
 
@@ -539,7 +539,7 @@ let writer (t : t) fn =
   let gc = Gc.with_memory t.gc w in
   let writer = { gc; root = t.root } in
   let res =
-    try Ok (fn writer)
+    try Ok (fn ~uid writer)
     with exn ->
       Log.err (fun m ->
           m "%016x terminated with an exception: %S"
