@@ -803,9 +803,9 @@ module Make (S : S) = struct
 
   let write_unlock_and_obsolete m addr =
     let* v = fetch_add m A.(addr + _header_kind) Value.leintnat 0b11 in
-    return
-      (Log.debug (fun m ->
-           m "%016x:%016x unlocked & obsolete" (Addr.unsafe_to_int addr) v))
+    Log.debug (fun m ->
+        m "%016x:%016x unlocked & obsolete" (Addr.unsafe_to_int addr) v);
+    return ()
 
   let is_obsolete version = version land 1 = 1
 
@@ -847,9 +847,6 @@ module Make (S : S) = struct
         return ()
       end
   [@@inline]
-
-  let write_unlock_obsolete m addr =
-    fetch_add m A.(addr + _header_kind) Value.leintnat 0b11
 
   let lock_version_or_restart m addr need_to_restart =
     let* version = get_version m addr in
@@ -1352,7 +1349,7 @@ module Make (S : S) = struct
     let null = A.(of_int_to_rdwr (null :> int)) in
     let rec restart () =
       incr retries;
-      if !retries > 1_000_000 then begin
+      if !retries > 10_000 then begin
         Log.warn (fun m -> m "Too many retries to insert %S" (key :> string));
         raise Too_many_retries
       end;
@@ -1611,7 +1608,7 @@ module Make (S : S) = struct
       let* () = persist m A.(to_wronly addr') ~len:size' in
       let* () = update_child m p kp (A.to_rdonly addr') in
       let* () = write_unlock m p in
-      let* _ = write_unlock_obsolete m (addr_of n) in
+      let* _ = write_unlock_and_obsolete m (addr_of n) in
       let* uid = atomic_get m A.(addr_of n + _header_owner) Value.leintnat in
       let n_length = size_of n in
       collect m (addr_of n) ~len:n_length ~uid
@@ -1714,7 +1711,7 @@ module Make (S : S) = struct
         else begin
           let* () = update_child m parent kp (Addr.to_rdonly second_node) in
           let* () = write_unlock m parent in
-          let* _ = write_unlock_obsolete m node in
+          let* _ = write_unlock_and_obsolete m node in
           let* uid = atomic_get m A.(node + _header_owner) Value.leintnat in
           let* len = size_of_node m node in
           let* () = collect m node ~len ~uid in
@@ -1736,7 +1733,7 @@ module Make (S : S) = struct
             let* () = update_child m parent kp (Addr.to_rdonly second_node) in
             let* () = add_prefix_before m second_node node ks in
             let* () = write_unlock m parent in
-            let* _ = write_unlock_obsolete m node in
+            let* _ = write_unlock_and_obsolete m node in
             let* uid = atomic_get m A.(node + _header_owner) Value.leintnat in
             let* len = size_of_node m node in
             let* () = collect m node ~len ~uid in
