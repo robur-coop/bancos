@@ -225,7 +225,7 @@ let sweep t writer =
     Log.debug (fun m -> m "sweep: free %d cell(s)" (List.length free));
     List.iter (Miou.Queue.enqueue t.collected) keep;
     Miou.Mutex.protect t.free_locker @@ fun () ->
-    List.iter (fun (addr, len) -> unsafe_add_free_cell t ~addr ~len) free
+    List.iter (fun (addr, len) -> unsafe_add_free_cell t writer ~addr ~len) free
   in
   if Miou.Queue.length t.collected > 0 then really_sweep ()
 
@@ -493,8 +493,8 @@ module Make (C : S) = struct
 
   let delete t (addr : 'a Rowex.Addr.t) len =
     Miou.Mutex.protect t.free_locker @@ fun () ->
-    unsafe_add_free_cell t ~addr:(Rowex.Addr.unsafe_to_int addr) ~len
+    unsafe_add_free_cell t 0 ~addr:(Rowex.Addr.unsafe_to_int addr) ~len
 
   let unsafe_delete t (addr : 'a Rowex.Addr.t) len =
-    unsafe_add_free_cell t ~addr:(Rowex.Addr.unsafe_to_int addr) ~len
+    unsafe_add_free_cell t 0 ~addr:(Rowex.Addr.unsafe_to_int addr) ~len
 end
