@@ -464,8 +464,8 @@ module Writer = struct
       | Some len -> len
       | None -> List.fold_left (fun a str -> a + String.length str) 0 payloads
     in
-    Log.debug (fun m -> m "alloctate %3d" len);
     let { W.uid; _ } = Gc.memory t.gc in
+    Log.debug (fun m -> m "[%016x] alloctate %3d" (uid :> int) len);
     Garbage_collector.alloc t.gc ~writer:uid ~kind len payloads
 
   let delete (t : memory) (addr : 'a Addr.t) len =
