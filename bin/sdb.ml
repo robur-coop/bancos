@@ -13,7 +13,7 @@ let execute ?(quiet = false) commands filepath size =
     | Some Noop -> go n
     | Some (Lookup key) ->
         let () =
-          Part.reader t @@ fun reader ->
+          Part.reader t @@ fun ~uid:_ reader ->
           match Part.lookup reader key with
           | value ->
               if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
@@ -25,7 +25,7 @@ let execute ?(quiet = false) commands filepath size =
         go (succ n)
     | Some (Insert (key, value)) ->
         let[@warning "-8"] (Ok ()) =
-          Part.writer t @@ fun writer ->
+          Part.writer t @@ fun ~uid:_ writer ->
           begin try Part.insert writer key value
           with Rowex.Duplicate ->
             Part.remove writer key;
@@ -35,7 +35,7 @@ let execute ?(quiet = false) commands filepath size =
         go (succ n)
     | Some (Remove key) ->
         let[@warning "-8"] (Ok ()) =
-          Part.writer t @@ fun writer -> Part.remove writer key
+          Part.writer t @@ fun ~uid:_ writer -> Part.remove writer key
         in
         go (succ n)
   in
@@ -78,7 +78,9 @@ let setup_commands input =
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
-let run quiet commands filepath size =
+let run (quiet, key) commands filepath size =
+  let reporter = Stdlib.Domain.DLS.get key in
+  let () = Lazy.force reporter in
   execute ~quiet commands (Fpath.to_string filepath) size;
   `Ok ()
 

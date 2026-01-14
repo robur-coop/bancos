@@ -16,6 +16,8 @@ let iter ?(quiet = false) to_delete node =
         Logs.info (fun m -> m "%S => %x" (key :> string) value)
     | `Duplicate key ->
         Logs.err (fun m -> m "%S already exists" (key :> string))
+    | `Too_many_retries key ->
+        Logs.err (fun m -> m "Too many retries for %S" (key :> string))
     | `Exists key -> Logs.info (fun m -> m "%S exists" (key :> string))
     | `Ok -> ()
   end
@@ -25,10 +27,12 @@ let clean ?(quiet = false) commands =
   Miou.Sequence.iter_node ~f:(iter ~quiet to_delete) commands;
   List.iter Miou.Sequence.remove !to_delete
 
-let execute ?(quiet = false) ?(and_remove = false) commands ~readers ~writers
-    filepath =
+let execute ?(quiet = false) ?(and_remove = false) reporter commands ~readers
+    ~writers ?size filepath =
   Miou.run ~domains:(readers + writers) @@ fun () ->
-  let t = Bancos.openfile ~readers ~writers filepath in
+  let reporter = Stdlib.Domain.DLS.get reporter in
+  let () = Lazy.force reporter in
+  let t = Bancos.openfile ~readers ~writers ?size filepath in
   Logs.debug (fun m -> m "ROWEX file loaded");
   let seq = Miou.Sequence.create () in
   let rec go () =
@@ -95,8 +99,8 @@ let setup_commands input =
 
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
-let run quiet commands filepath readers writers and_remove =
-  execute ~quiet ~and_remove commands ~readers ~writers
+let run (quiet, reporter) commands filepath readers writers and_remove size =
+  execute ~quiet ~and_remove reporter commands ~readers ~writers ~size
     (Fpath.to_string filepath);
   `Ok ()
 
@@ -138,12 +142,17 @@ let commands =
   & opt (some (conv (parser, Fmt.string))) None
   & info [ "c"; "commands" ] ~doc
 
+let size =
+  let doc = "The size of the ROWEX file" in
+  let open Arg in
+  value & opt size 10485760 & info [ "s"; "size" ] ~doc ~docv:"SIZE"
+
 let term_setup_commands = Term.(const setup_commands $ commands)
 
 let term =
   let open Term in
   const run $ term_setup_logs $ term_setup_commands $ index $ readers $ writers
-  $ and_remove |> ret
+  $ and_remove $ size |> ret
 
 let cmd =
   let doc = "A simple tool to manipulate an KV-store (parallel)" in

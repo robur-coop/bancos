@@ -332,7 +332,7 @@ let index =
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
   let v = Arg.conv (parser, pp) in
-  Arg.(required & pos 0 (some v) None & info [] ~doc)
+  Arg.(required & pos 0 (some v) None & info [] ~doc ~docv:"FILE")
 
 let addr =
   let doc = "The address of the node" in
@@ -344,7 +344,7 @@ let addr =
   in
   let pp ppf (Addr addr) = Fmt.pf ppf "@0x%016x" addr in
   let addr = Arg.conv (parser, pp) in
-  Arg.(required & pos 1 (some addr) None & info [] ~doc)
+  Arg.(required & pos 1 (some addr) None & info [] ~doc ~docv:"ADDR")
 
 let as_a_leaf =
   let doc = "Show information of a lea." in
