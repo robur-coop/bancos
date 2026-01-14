@@ -169,8 +169,9 @@ let memory { memory; _ } = memory
 let with_memory t memory = { t with memory }
 let null = 0
 
-let unsafe_add_free_cell t ~addr ~len =
-  Log.debug (fun m -> m "Add a new free cell %016x (%d byte(s))" addr len);
+let unsafe_add_free_cell t writer ~addr ~len =
+  Log.debug (fun m ->
+      m "[%016x] add a new free cell %016x (%d byte(s))" writer addr len);
   let () =
     try
       let cells = Hashtbl.find t.free len in
@@ -206,8 +207,13 @@ let can_we_sweep_it writer uid' =
 let collect t writer addr ~len ~uid =
   let addr = Rowex.Addr.unsafe_to_int addr in
   Log.debug (fun m ->
-      m "[%016x] collect %016x (%d byte(s)) made by %016x & owned by %016x"
-        writer addr len uid writer);
+      m "[%016x] collects %016x (%d byte(s)) made by %016x" writer addr len uid);
+  (* TODO(dinosaure): I don't remmember if we need to keep the task which
+     collects the cell ([writer]) or if we need to keep the task which made the
+     cell ([uid]):
+     - If we use [uid], we fallback to an unreachable case on [rowex]: not
+       in-sync nodes... So we break something.
+     - If we use [writer], we don't really re-use cells. *)
   Miou.Queue.enqueue t.collected { addr; len; uid = writer }
 
 let sweep t writer =
@@ -284,11 +290,12 @@ module Make (C : S) = struct
 
   let really_alloc t writer ~kind len payloads =
     let len = (len + (size_of_word - 1)) / size_of_word * size_of_word in
-    Log.debug (fun m -> m "try to allocate %d byte(s)" len);
+    Log.debug (fun m -> m "[%016x] try to allocate %d byte(s)" writer len);
     let old_brk = C.atomic_fetch_add_leuintnat t.memory 0 len in
     if old_brk + len <= C.length t.memory then begin
       let addr = old_brk in
-      Log.debug (fun m -> m "brk: %016x => %016x" addr (old_brk + len));
+      Log.debug (fun m ->
+          m "brk: %016x (owner: [%016x]) => %016x" addr writer (old_brk + len));
       blitv payloads t.memory addr;
       if kind = `Node then
         C.atomic_set_leuintnat t.memory (addr + Rowex._header_owner) writer;
@@ -374,6 +381,8 @@ module Make (C : S) = struct
               really_alloc t writer ~kind len payloads
           end
         | Some addr ->
+            Log.debug (fun m ->
+                m "re-use(2) %016x (owner: [%016x])" addr writer);
             blitv payloads t.memory addr;
             if kind = `Node then
               C.atomic_set_leuintnat t.memory
