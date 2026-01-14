@@ -461,14 +461,21 @@ let make blk =
   let atomic_read = Mkernel.Block.atomic_read in
   let m = { blk; wr; rd; atomic_read; writev; tmp; pagesize } in
   let w = { W.memory = m; uid = Gc.null } in
-  C.atomic_set_leuintnat m 0 16;
   let extend_and_copy _ _ = raise Out_of_memory in
   let gc = Gc.make ~extend_and_copy (Atomic.make w) in
   let writer = { gc; root = Rowex.Addr.null } in
-  let root = Rowex_wr.make writer in
-  C.atomic_set_leuintnat m 8 (Rowex.Addr.unsafe_to_int root);
-  Cachet_wr.commit wr;
-  { gc; root }
+  let brk = C.atomic_get_leuintnat m 0 in
+  if brk == 0 then begin
+    let root = Rowex_wr.make writer in
+    C.atomic_set_leuintnat m 8 (Rowex.Addr.unsafe_to_int root);
+    Cachet_wr.commit wr;
+    { gc; root }
+  end
+  else
+    let root = C.atomic_get_leuintnat m 8 in
+    { gc; root }
+
+(* TODO(dinosaure): scan and fill our GC with unreachable nodes. *)
 
 let reader t fn =
   let uid = Garbage_collector.add_process t.gc `Rd in
