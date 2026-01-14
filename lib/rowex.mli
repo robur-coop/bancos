@@ -1,4 +1,5 @@
 exception Duplicate
+exception Too_many_retries
 
 (** Persistent implementation of Adaptive Radix Tree.
 
@@ -6,7 +7,7 @@ exception Duplicate
     atomically load and store values. This implementation wants to ensure 2
     things:
     - [insert] and [lookup] can be executed in {b true} parallelism
-    - persistence is ensured by required {i syscalls}
+    - persistence is ensured by required {i syscalls} (see {!val:S.persist})
 
     {2 A quick note about atomic operations.}
 
@@ -88,9 +89,8 @@ module type S = sig
 
       {b NOTE}: the first [sfence] is not systematically needed depending on
       what was done before (and if it's revelant for the current computation
-      regardless the status of the cache) - such disposition is hard to track
-      and we prefer to assume a correct write order than a micro-optimization.
-  *)
+      regardless the status of the cache). Such disposition is hard to track and
+      we prefer to assume a correct write order than a micro-optimization. *)
 
   val movnt64 : memory -> dst:'a wr Addr.t -> int -> unit t
   (** [movnt64] is a special instruction that:
@@ -98,10 +98,9 @@ module type S = sig
       - must not load the page being written to in the cache
 
       The goal here is that the write must be fundamentally persistent, but we
-      tolerate a cache miss if we try to read the modified page.
-
-      We tolerate this because [movnt64] is involved in creating a new node (and
-      therefore a new key insertion) that should not be read anytime soon. *)
+      tolerate a cache miss if we try to read the modified page. We tolerate
+      this because [movnt64] is involved in creating a new node (and therefore a
+      new key insertion) that should not be read anytime soon. *)
 
   val set_n48_key : memory -> 'a wr Addr.t -> int -> int -> unit t
   val fetch_add : memory -> rdwr Addr.t -> (atomic, int) value -> int -> int t
