@@ -2,6 +2,7 @@
  (package bancos)
  (deps
   %{bin:bancos.sdb}
+  st_size.ml
   001.cmds
   002.cmds
   003.cmds
