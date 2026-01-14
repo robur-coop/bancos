@@ -815,10 +815,10 @@ module Make (S : S) = struct
   [@@inline]
 
   let rec until_is_locked m addr version retries =
-    if retries > 1_000_000 then begin
+    if retries > 10_000 then begin
       Log.warn (fun m ->
-          m "%016x locked for a too long time (%d)" (Addr.unsafe_to_int addr)
-            retries);
+          m "%016x locked for a too long time (%d) (%x)"
+            (Addr.unsafe_to_int addr) retries version);
       raise Too_many_retries
     end;
     if version land 0b10 = 0b10 then
@@ -831,6 +831,8 @@ module Make (S : S) = struct
   let rec write_lock_or_restart m addr need_to_restart =
     let* version = atomic_get m A.(addr + _header_kind) Value.leintnat in
     let* version = until_is_locked m addr version 0 in
+    Log.debug (fun m ->
+        m "write lock or restart %016x: %016x" (Addr.unsafe_to_int addr) version);
     if is_obsolete version then begin
       need_to_restart := true;
       return ()
@@ -850,6 +852,8 @@ module Make (S : S) = struct
 
   let lock_version_or_restart m addr need_to_restart =
     let* version = get_version m addr in
+    Log.debug (fun m ->
+        m "try to lock %016x (%016x)" (Addr.unsafe_to_int addr) version);
     if version land 0b10 = 0b10 || version land 1 = 1 then begin
       need_to_restart := true;
       return version
@@ -937,9 +941,6 @@ module Make (S : S) = struct
     | _ -> assert false
 
   let alloc_n4 m ~prefix:p ~prefix_count ~level =
-    Log.debug (fun m ->
-        m "allocation of a <n4> (prefix:%S, prefix_count:%d, level:%d)" p
-          prefix_count level);
     let prefix = Bytes.make 4 '\000' in
     Bytes.blit_string p 0 prefix 0 (min _prefix (String.length p));
     let prefix_count = leint31_to_string prefix_count in
@@ -1130,7 +1131,7 @@ module Make (S : S) = struct
    fun m n p k kp v need_to_restart ->
     let addr = addr_of n in
     Log.debug (fun m ->
-        m "insert: %016x[%a] <- %016x"
+        m "insert-grow: %016x[%a] <- %016x"
           (Addr.unsafe_to_int (addr_of n))
           pp_char k (Addr.unsafe_to_int v));
     let* inserted = add_child m n k v true in
@@ -1152,6 +1153,11 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
+        Log.debug (fun m ->
+            m "insert-grow: %016x[%a] <- %016x"
+              (p :> int)
+              pp_char kp
+              (addr' :> int));
         let* () = update_child m p kp (Addr.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
@@ -1181,6 +1187,10 @@ module Make (S : S) = struct
     let* prefix, prefix_count = get_prefix m addr in
     let* level = get_depth m addr in
     let* n' = alloc m ~according_to:n ~prefix ~prefix_count ~level in
+    Log.debug (fun m ->
+        m "insert-compact: %016x[%a] <- %016x"
+          (addr_of n :> int)
+          pp_char k (Addr.unsafe_to_int v));
     let* () = copy_into m n n' in
     let* added = add_child m n' k v false in
     if not added then
@@ -1200,6 +1210,11 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
+        Log.debug (fun m ->
+            m "insert-compact: %016x[%a] <- %016x"
+              (p :> int)
+              pp_char kp
+              (addr' :> int));
         let* () = update_child m p kp (A.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
