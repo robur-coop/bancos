@@ -62,5 +62,5 @@ Repeat, remove and insert!
   $ MIOU_DOMAINS=1 bancos.sdb -qi rowex.09.idx -c 006.cmds
 It should grow to 3MiB
   $ MIOU_DOMAINS=1 PART_TMP=$(pwd) bancos.sdb -qi rowex.10.idx -s 1Mib -c 005.cmds
-  $ wc -c rowex.10.idx
-  3145728 rowex.10.idx
+  $ du -b rowex.10.idx|cut -f1
+  3145728
