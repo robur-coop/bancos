@@ -1,7 +1,7 @@
 # Bancos, a simple KV-store
 
-`bancos` is a KV store, meaning that it can associate a string with a number
-(which can refer to a value). This KV store is persistent (meaning that it is
+`bancos` is a KV-store, meaning that it can associate a string with a number
+(which can refer to a value). This KV-store is persistent (meaning that it is
 saved in a file or block device) and the structure can be manipulated by
 several programs in parallel:
 - the structure used is [ROWEX][rowex]
