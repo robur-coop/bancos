@@ -110,7 +110,9 @@ module C = struct
 
   let get_ocaml_string_length t off =
     (* XXX(dinosaure): we assume [Sys.word_size = 64]. *)
-    let ln = int63_to_int (Cachet_wr.get_int64_le t.wr off) in
+    let ln = Cachet_wr.get_int64_le t.wr off in
+    let ln = Int64.logand ln 0xfffffffffffffffL in
+    let ln = int63_to_int ln in
     let pd = Cachet_wr.get_int64_le t.wr (off + ((ln - 2) * 8)) in
     let pd = int63_to_int pd in
     ((ln - 2) * 8) - (pd lsr 56) - 1
@@ -466,13 +468,16 @@ let make blk =
   let writer = { gc; root = Rowex.Addr.null } in
   let brk = C.atomic_get_leuintnat m 0 in
   if brk == 0 then begin
+    C.atomic_set_leuintnat m 0 16;
     let root = Rowex_wr.make writer in
+    Log.debug (fun m -> m "ROWEX tree root: %016x" (root :> int));
     C.atomic_set_leuintnat m 8 (Rowex.Addr.unsafe_to_int root);
     Cachet_wr.commit wr;
     { gc; root }
   end
   else
     let root = C.atomic_get_leuintnat m 8 in
+    let root = Rowex.Addr.of_int_to_rdwr root in
     { gc; root }
 
 (* TODO(dinosaure): scan and fill our GC with unreachable nodes. *)
