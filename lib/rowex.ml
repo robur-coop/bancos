@@ -1243,7 +1243,7 @@ module Make (S : S) = struct
             let dis = if depth > level then depth - level else level - depth in
             let* kr = minimum_key m addr in
             let prefix = Bytes.make _prefix '\000' in
-            for i = 0 to Int.min dis _prefix - 1 do
+            for i = 0 to min dis _prefix - 1 do
               Bytes.set prefix i kr.![level + i]
             done;
             let prefix = Bytes.unsafe_to_string prefix in
@@ -1287,7 +1287,7 @@ module Make (S : S) = struct
                     let* kt = Lazy.force kt in
                     let non_matching_prefix = Bytes.make _prefix '\000' in
                     let top =
-                      Int.min (prefix_count - (level - level') - 1) _prefix
+                      min (prefix_count - (level - level') - 1) _prefix
                     in
                     for j = 0 to top - 1 do
                       Bytes.set non_matching_prefix j kt.![level + j + 1]
