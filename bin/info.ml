@@ -184,7 +184,7 @@ let index =
   let parser = Fpath.of_string in
   let pp = Fpath.pp in
   let v = Arg.conv (parser, pp) in
-  Arg.(required & pos 0 (some v) None & info [] ~doc)
+  Arg.(required & pos 0 (some v) None & info [] ~doc ~docv:"FILE")
 
 let term = Term.(ret (const run $ term_setup_logs $ index))
 

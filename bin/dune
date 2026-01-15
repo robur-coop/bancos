@@ -34,4 +34,12 @@
  (name bancos_cli)
  (modules bancos_cli)
  (public_name bancos.cli)
- (libraries cmdliner fpath fmt.tty fmt.cli logs.fmt logs.cli logs.threaded))
+ (libraries
+  re
+  cmdliner
+  fpath
+  fmt.tty
+  fmt.cli
+  logs.fmt
+  logs.cli
+  logs.threaded))

@@ -1,6 +1,7 @@
 let () = Printexc.record_backtrace true
 
 exception Duplicate
+exception Too_many_retries
 
 let ( .![] ) = String.unsafe_get
 (* XXX(dinosaure): see [art.ml] about this unsafe access. *)
@@ -518,7 +519,10 @@ module Make (S : S) = struct
     | 1 -> n16_any_child m addr
     | 2 -> n48_any_child m addr
     | 3 -> n256_any_child m addr
-    | _ -> assert false
+    | n ->
+        Log.err (fun m ->
+            m "Invalid node at %016x (type: %d)" (A.unsafe_to_int addr) n);
+        assert false
 
   let rec minimum : memory -> ro A.t -> ro A.t t =
    fun m addr ->
@@ -743,7 +747,7 @@ module Make (S : S) = struct
         let* () = atomic_set m pk Value.int8 ccount in
         let* _ = fetch_add m A.(addr + _header_compact_count) Value.leint16 1 in
         let* _ = fetch_add m A.(addr + _header_count) Value.leint16 1 in
-        return false
+        return true
 
   let add_child_n16 m (N16 addr) k v flush =
     let* ccount = get_compact_count m addr in
@@ -799,9 +803,9 @@ module Make (S : S) = struct
 
   let write_unlock_and_obsolete m addr =
     let* v = fetch_add m A.(addr + _header_kind) Value.leintnat 0b11 in
-    return
-      (Log.debug (fun m ->
-           m "%016x:%016x unlocked & obsolete" (Addr.unsafe_to_int addr) v))
+    Log.debug (fun m ->
+        m "%016x:%016x unlocked & obsolete" (Addr.unsafe_to_int addr) v);
+    return ()
 
   let is_obsolete version = version land 1 = 1
 
@@ -811,10 +815,12 @@ module Make (S : S) = struct
   [@@inline]
 
   let rec until_is_locked m addr version retries =
-    if retries > 1000 then
+    if retries > 10_000 then begin
       Log.warn (fun m ->
-          m "%016x locked for a too long time (%d)" (Addr.unsafe_to_int addr)
-            retries);
+          m "%016x locked for a too long time (%d) (%x)"
+            (Addr.unsafe_to_int addr) retries version);
+      raise Too_many_retries
+    end;
     if version land 0b10 = 0b10 then
       let* () = pause_intrinsic () in
       let* version = atomic_get m A.(addr + _header_kind) Value.leintnat in
@@ -825,6 +831,8 @@ module Make (S : S) = struct
   let rec write_lock_or_restart m addr need_to_restart =
     let* version = atomic_get m A.(addr + _header_kind) Value.leintnat in
     let* version = until_is_locked m addr version 0 in
+    Log.debug (fun m ->
+        m "write lock or restart %016x: %016x" (Addr.unsafe_to_int addr) version);
     if is_obsolete version then begin
       need_to_restart := true;
       return ()
@@ -836,14 +844,16 @@ module Make (S : S) = struct
           Value.leintnat (Atomic.make version) (version + 0b10)
       in
       if not res then write_lock_or_restart m addr need_to_restart
-      else
-        return (Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr)))
+      else begin
+        Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr));
+        return ()
+      end
   [@@inline]
 
-  let write_unlock_obsolete m addr =
-    fetch_add m A.(addr + _header_kind) Value.leintnat 0b11
-
-  let lock_version_or_restart m addr version need_to_restart =
+  let lock_version_or_restart m addr need_to_restart =
+    let* version = get_version m addr in
+    Log.debug (fun m ->
+        m "try to lock %016x (%016x)" (Addr.unsafe_to_int addr) version);
     if version land 0b10 = 0b10 || version land 1 = 1 then begin
       need_to_restart := true;
       return version
@@ -931,9 +941,6 @@ module Make (S : S) = struct
     | _ -> assert false
 
   let alloc_n4 m ~prefix:p ~prefix_count ~level =
-    Log.debug (fun m ->
-        m "allocation of a <n4> (prefix:%S, prefix_count:%d, level:%d)" p
-          prefix_count level);
     let prefix = Bytes.make 4 '\000' in
     Bytes.blit_string p 0 prefix 0 (min _prefix (String.length p));
     let prefix_count = leint31_to_string prefix_count in
@@ -1124,7 +1131,7 @@ module Make (S : S) = struct
    fun m n p k kp v need_to_restart ->
     let addr = addr_of n in
     Log.debug (fun m ->
-        m "insert: %016x[%a] <- %016x"
+        m "insert-grow: %016x[%a] <- %016x"
           (Addr.unsafe_to_int (addr_of n))
           pp_char k (Addr.unsafe_to_int v));
     let* inserted = add_child m n k v true in
@@ -1146,6 +1153,11 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
+        Log.debug (fun m ->
+            m "insert-grow: %016x[%a] <- %016x"
+              (p :> int)
+              pp_char kp
+              (addr' :> int));
         let* () = update_child m p kp (Addr.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
@@ -1175,6 +1187,10 @@ module Make (S : S) = struct
     let* prefix, prefix_count = get_prefix m addr in
     let* level = get_depth m addr in
     let* n' = alloc m ~according_to:n ~prefix ~prefix_count ~level in
+    Log.debug (fun m ->
+        m "insert-compact: %016x[%a] <- %016x"
+          (addr_of n :> int)
+          pp_char k (Addr.unsafe_to_int v));
     let* () = copy_into m n n' in
     let* added = add_child m n' k v false in
     if not added then
@@ -1194,6 +1210,11 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
+        Log.debug (fun m ->
+            m "insert-compact: %016x[%a] <- %016x"
+              (p :> int)
+              pp_char kp
+              (addr' :> int));
         let* () = update_child m p kp (A.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
@@ -1214,14 +1235,13 @@ module Make (S : S) = struct
     let* res =
       if prefix_count + level != depth then begin
         let need_to_recover = ref false in
-        let* v = get_version m addr in
-        let* _ = lock_version_or_restart m addr v need_to_recover in
+        let* _ = lock_version_or_restart m addr need_to_recover in
         let* prefix, prefix_count =
           if !need_to_recover = false then begin
-            Log.debug (fun m -> m "insertion: inconsistent state");
+            Log.warn (fun m ->
+                m "insertion: inconsistent state at %016x" (addr :> int));
             let dis = if depth > level then depth - level else level - depth in
             let* kr = minimum_key m addr in
-            let prefix_count = dis in
             let prefix = Bytes.make _prefix '\000' in
             for i = 0 to min dis _prefix - 1 do
               Bytes.set prefix i kr.![level + i]
@@ -1229,6 +1249,7 @@ module Make (S : S) = struct
             let prefix = Bytes.unsafe_to_string prefix in
             Log.debug (fun m ->
                 m "insertion: set prefix to %S:%d" prefix prefix_count);
+            let prefix_count = dis in
             let* () = set_prefix m addr ~prefix ~prefix_count true in
             let* () = write_unlock m addr in
             return (prefix, prefix_count)
@@ -1338,33 +1359,36 @@ module Make (S : S) = struct
       done;
       if !idx < off then raise Duplicate)
 
-  let rec insert m root key leaf =
+  let insert m root key leaf =
     let retries = ref 0 in
+    let null = A.(of_int_to_rdwr (null :> int)) in
     let rec restart () =
       incr retries;
-      if !retries > 100 then
+      if !retries > 10_000 then begin
         Log.warn (fun m -> m "Too many retries to insert %S" (key :> string));
-      Log.debug (fun m -> m "insert: retry");
-      (insert [@tailcall]) m root key leaf
+        raise Too_many_retries
+      end;
+      Log.debug (fun m -> m "insert: retry (%d)" !retries);
+      let* () = S.pause_intrinsic () in
+      (_insert [@tailcall]) null root null '\000' 0
     and _insert node next_node _parent kn level =
       let need_to_restart = ref false in
       let parent = node in
       let kp = kn in
       let node = next_node in
-      let* v = get_version m node in
       Log.debug (fun m ->
           m "insertion: walk into %016x and check prefix" (A.unsafe_to_int node));
       let* res = check_prefix_pessimistic m node ~key level in
       match res with
       | Skipped_level ->
-          Log.debug (fun m -> m "insertion: skipped level");
+          Log.warn (fun m -> m "insertion: skipped level");
           restart ()
       | No_match { non_matching_key; non_matching_prefix; level = next_level }
         ->
           Log.debug (fun m ->
               m "insertion: no match %a %S (%d => %d)" pp_char non_matching_key
                 non_matching_prefix level next_level);
-          let* _ = lock_version_or_restart m node v need_to_restart in
+          let* _ = lock_version_or_restart m node need_to_restart in
           if !need_to_restart then (restart [@tailcall]) ()
           else
             let* prefix, _ = get_prefix m node in
@@ -1408,7 +1432,7 @@ module Make (S : S) = struct
           let kn = key.![level] in
           let* next_node = find_child m node kn in
           if Addr.is_null next_node then
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let () =
@@ -1421,7 +1445,7 @@ module Make (S : S) = struct
               if !need_to_restart then (restart [@tailcall]) () else return ()
           else if (next_node :> int) land 1 = 1 then begin
             Log.debug (fun m -> m "insertion: the next node is a leaf");
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let* key' =
@@ -1460,7 +1484,6 @@ module Make (S : S) = struct
           else
             _insert node (Addr.unsafe_to_rdwr next_node) parent kn (succ level)
     in
-    let null = A.(of_int_to_rdwr (null :> int)) in
     _insert null root null '\000' 0
 
   let _n4_get_second_child m addr key =
@@ -1600,7 +1623,7 @@ module Make (S : S) = struct
       let* () = persist m A.(to_wronly addr') ~len:size' in
       let* () = update_child m p kp (A.to_rdonly addr') in
       let* () = write_unlock m p in
-      let* _ = write_unlock_obsolete m (addr_of n) in
+      let* _ = write_unlock_and_obsolete m (addr_of n) in
       let* uid = atomic_get m A.(addr_of n + _header_owner) Value.leintnat in
       let n_length = size_of n in
       collect m (addr_of n) ~len:n_length ~uid
@@ -1703,7 +1726,7 @@ module Make (S : S) = struct
         else begin
           let* () = update_child m parent kp (Addr.to_rdonly second_node) in
           let* () = write_unlock m parent in
-          let* _ = write_unlock_obsolete m node in
+          let* _ = write_unlock_and_obsolete m node in
           let* uid = atomic_get m A.(node + _header_owner) Value.leintnat in
           let* len = size_of_node m node in
           let* () = collect m node ~len ~uid in
@@ -1711,8 +1734,7 @@ module Make (S : S) = struct
         end
       end
       else begin
-        let* v_child = get_version m second_node in
-        let* _ = lock_version_or_restart m second_node v_child restart in
+        let* _ = lock_version_or_restart m second_node restart in
         if !restart then
           let* () = write_unlock m node in
           return Restart
@@ -1726,7 +1748,7 @@ module Make (S : S) = struct
             let* () = update_child m parent kp (Addr.to_rdonly second_node) in
             let* () = add_prefix_before m second_node node ks in
             let* () = write_unlock m parent in
-            let* _ = write_unlock_obsolete m node in
+            let* _ = write_unlock_and_obsolete m node in
             let* uid = atomic_get m A.(node + _header_owner) Value.leintnat in
             let* len = size_of_node m node in
             let* () = collect m node ~len ~uid in
@@ -1764,7 +1786,7 @@ module Make (S : S) = struct
             else return ()
           end
           else if (next_node :> int) land 1 = 1 then begin
-            let* _ = lock_version_or_restart m node v need_to_restart in
+            let* _ = lock_version_or_restart m node need_to_restart in
             Log.debug (fun m ->
                 m "remove: start to rebalance (restart? %b)" !need_to_restart);
             if !need_to_restart then (restart [@tailcall]) ()

@@ -23,10 +23,16 @@
   (names rowex)))
 
 (library
+ (name gc)
+ (modules gc)
+ (public_name bancos.gc)
+ (libraries miou rowex))
+
+(library
  (name part)
  (modules part)
  (public_name bancos.part)
- (libraries unix miou rowex fmt)
+ (libraries bstr unix miou rowex bancos.gc fmt)
  (ocamlopt_flags -O3 -unbox-closures -unbox-closures-factor 20)
  (foreign_stubs
   (language c)

@@ -1,37 +1,30 @@
-let src = Logs.Src.create "db"
+let src = Logs.Src.create "bancos"
+
+let try_catch ~exn:fn_exn fn =
+  try fn ()
+  with exn ->
+    let bt = Printexc.get_raw_backtrace () in
+    fn_exn bt exn
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+type wr = [ `Ok | `Duplicate of Rowex.key | `Too_many_retries of Rowex.key ]
+type rd = [ `Found of Rowex.key * int | `Not_found of Rowex.key ]
+
 type command =
-  | Insert of Rowex.key * int * [ `Ok | `Duplicate ] Miou.Computation.t
+  | Insert of Rowex.key * int * wr Miou.Computation.t
   | Remove of Rowex.key
-  | Lookup of Rowex.key * [ `Found of int | `Not_found ] Miou.Computation.t
+  | Lookup of Rowex.key * rd Miou.Computation.t
   | Exists of Rowex.key * bool Miou.Computation.t
 
-type result =
-  [ `Ok
-  | `Not_found of Rowex.key
-  | `Found of Rowex.key * int
-  | `Duplicate of Rowex.key
-  | `Exists of Rowex.key ]
+type result = [ wr | rd | `Exists of Rowex.key ]
 
 let await = function
   | Remove _ -> `Ok
-  | Insert (key, _, res) -> begin
-      match Miou.Computation.await_exn res with
-      | `Ok -> `Ok
-      | `Duplicate -> `Duplicate key
-    end
-  | Lookup (key, res) -> begin
-      match Miou.Computation.await_exn res with
-      | `Found value -> `Found (key, value)
-      | `Not_found -> `Not_found key
-    end
-  | Exists (key, res) -> begin
-      match Miou.Computation.await_exn res with
-      | true -> `Exists key
-      | false -> `Not_found key
-    end
+  | Insert (_, _, ivar) -> (Miou.Computation.await_exn ivar :> result)
+  | Lookup (_, ivar) -> (Miou.Computation.await_exn ivar :> result)
+  | Exists (key, ivar) ->
+      if Miou.Computation.await_exn ivar then `Exists key else `Not_found key
 
 let is_running = function
   | Remove _ -> false
@@ -51,72 +44,57 @@ type t = {
   ; orphans : unit Miou.orphans
 }
 
-let do_wrs t ~uid wrs =
-  Part.writer t.part @@ fun writer ->
-  let do_wr = function
-    | Insert (key, value, res) -> begin
-        Log.debug (fun m -> m "[%02x] start to insert %S" uid (key :> string));
-        match Part.insert writer key value with
-        | () ->
-            let set = Miou.Computation.try_return res `Ok in
-            Log.debug (fun m ->
-                m "[%02x] %S inserted (set:%b)" uid (key :> string) set)
-        | exception Rowex.Duplicate ->
-            let set = Miou.Computation.try_return res `Duplicate in
-            Log.debug (fun m ->
-                m "[%02x] %S is a duplicate (set:%b)" uid (key :> string) set)
-        | exception exn ->
-            let bt = Printexc.get_raw_backtrace () in
-            let set = Miou.Computation.try_cancel res (exn, bt) in
-            Log.err (fun m ->
-                m "[%02x] errored by %S (set:%b)" uid (Printexc.to_string exn)
-                  set)
-      end
+let writer t ops =
+  Part.writer t.part @@ fun ~uid writer ->
+  let fn = function
+    | Insert (key, value, ivar) ->
+        Log.debug (fun m ->
+            m "[%016x] start to insert %S" (uid :> int) (key :> string));
+        let fn () =
+          Part.insert writer key value;
+          Miou.Computation.try_return ivar `Ok
+        and exn bt = function
+          | Rowex.Duplicate -> Miou.Computation.try_return ivar (`Duplicate key)
+          | Rowex.Too_many_retries ->
+              Miou.Computation.try_return ivar (`Too_many_retries key)
+          | exn -> Miou.Computation.try_cancel ivar (exn, bt)
+        in
+        assert (try_catch ~exn fn)
     | Remove key -> Part.remove writer key
     | _ -> assert false
   in
-  List.iter do_wr wrs;
-  Log.debug (fun m ->
-      m "[%02x] finished its tasks (%d task(s))" uid (List.length wrs))
+  List.iter fn ops
 
-let do_wrs ~uid t wrs =
-  match do_wrs t ~uid wrs with
-  | Ok () -> ()
-  | Error exn ->
-      Log.err (fun m -> m "[%02x] failed with %S" uid (Printexc.to_string exn))
-
-let do_rds t rds =
-  Part.reader t.part @@ fun reader ->
-  let do_rd = function
-    | Lookup (key, res) -> begin
-        match Part.lookup reader key with
-        | value -> assert (Miou.Computation.try_return res (`Found value))
-        | exception Not_found ->
-            assert (Miou.Computation.try_return res `Not_found)
+let reader t ops =
+  Part.reader t.part @@ fun ~uid:_ reader ->
+  let fn = function
+    | Lookup (key, ivar) -> begin
+        let fn () = `Found (key, Part.lookup reader key) in
+        let exn _bt _exn = `Not_found key in
+        let result = try_catch ~exn fn in
+        assert (Miou.Computation.try_return ivar result)
       end
-    | Exists (key, res) ->
+    | Exists (key, ivar) ->
         let exists = Part.exists reader key in
-        assert (Miou.Computation.try_return res exists)
+        assert (Miou.Computation.try_return ivar exists)
     | _ -> assert false
   in
-  List.iter do_rd rds
+  List.iter fn ops
 
-let writer ~uid t () =
-  Log.debug (fun m -> m "writer [%02x] launched" uid);
+let task_writer init t () =
+  let value = Stdlib.Domain.DLS.get init in
+  let () = Lazy.force value in
   let exception Exit in
   try
     while true do
-      Log.debug (fun m -> m "writer [%02x] idle" uid);
       Miou.Mutex.lock (fst t.txs_locker);
       while Miou.Queue.is_empty t.txs && not (Atomic.get t.close) do
         Miou.Condition.wait (snd t.txs_locker) (fst t.txs_locker)
       done;
       if Atomic.get t.close then raise Exit;
       Miou.Mutex.unlock (fst t.txs_locker);
-      Log.debug (fun m -> m "writer [%02x] runs" uid);
-      let wrs = Miou.Queue.(to_list (transfer t.txs)) in
-      do_wrs ~uid t wrs;
-      Log.debug (fun m -> m "writer [%02x] sleep" uid);
+      let ops = Miou.Queue.(to_list (transfer t.txs)) in
+      ignore (writer t ops);
       Miou.Mutex.lock (fst t.idle);
       if (not (Atomic.get t.close)) && t.workers = 0 then
         Miou.Condition.signal (snd t.idle);
@@ -125,20 +103,19 @@ let writer ~uid t () =
   with
   | Exit ->
       Miou.Mutex.unlock (fst t.txs_locker);
-      Log.debug (fun m -> m "writer [%02x] quit" uid);
       Miou.Mutex.lock (fst t.idle);
       t.workers <- t.workers - 1;
       Miou.Condition.signal (snd t.idle);
       Miou.Mutex.unlock (fst t.idle)
-  | exn ->
-      Log.err (fun m ->
-          m "writer [%02x] exited with: %S" uid (Printexc.to_string exn));
+  | _exn ->
       Miou.Mutex.lock (fst t.idle);
       t.workers <- t.workers - 1;
       Miou.Condition.signal (snd t.idle);
       Miou.Mutex.unlock (fst t.idle)
 
-let reader t () =
+let task_reader init t () =
+  let value = Stdlib.Domain.DLS.get init in
+  let () = Lazy.force value in
   let exception Exit in
   try
     while true do
@@ -148,8 +125,8 @@ let reader t () =
       done;
       if Atomic.get t.close then raise Exit;
       Miou.Mutex.unlock (fst t.rxs_locker);
-      let rds = Miou.Queue.(to_list (transfer t.rxs)) in
-      do_rds t rds;
+      let ops = Miou.Queue.(to_list (transfer t.rxs)) in
+      reader t ops;
       Miou.Mutex.lock (fst t.idle);
       if (not (Atomic.get t.close)) && t.workers = 0 then
         Miou.Condition.signal (snd t.idle);
@@ -158,13 +135,11 @@ let reader t () =
   with
   | Exit ->
       Miou.Mutex.unlock (fst t.rxs_locker);
-      Log.debug (fun m -> m "reader quit");
       Miou.Mutex.lock (fst t.idle);
       t.workers <- t.workers - 1;
       Miou.Condition.signal (snd t.idle);
       Miou.Mutex.unlock (fst t.idle)
-  | exn ->
-      Log.err (fun m -> m "reader exited with: %S" (Printexc.to_string exn));
+  | _exn ->
       Miou.Mutex.lock (fst t.idle);
       t.workers <- t.workers - 1;
       Miou.Condition.signal (snd t.idle);
@@ -205,11 +180,11 @@ let close t =
   go Miou.Backoff.default;
   terminate t
 
-let gen =
-  let v = Atomic.make 0 in
-  fun () -> Atomic.fetch_and_add v 1
+let nothing =
+  let fn () = Lazy.from_val () in
+  Stdlib.Domain.DLS.new_key fn
 
-let openfile ?(readers = 4) ?(writers = 2) ?size filepath =
+let openfile ?(readers = 4) ?(writers = 2) ?size ?(init = nothing) filepath =
   let part = Part.from_system ?size filepath in
   let domains = Miou.Domain.all () in
   if List.length domains < readers + writers then
@@ -237,10 +212,10 @@ let openfile ?(readers = 4) ?(writers = 2) ?size filepath =
     ; orphans
     }
   in
-  List.iter (fun pin -> ignore (Miou.call ~pin ~orphans (reader t))) p_readers;
-  List.iter
-    (fun pin -> ignore (Miou.call ~pin ~orphans (writer t ~uid:(gen ()))))
-    p_writers;
+  let fnr pin = ignore (Miou.call ~pin ~orphans (task_reader init t)) in
+  let fnw pin = ignore (Miou.call ~pin ~orphans (task_writer init t)) in
+  List.iter fnr p_readers;
+  List.iter fnw p_writers;
   t
 
 let lookup t key =

@@ -4,14 +4,15 @@ type memory =
 type t
 type reader
 type writer
+type uid = private int
 
 val lookup : reader -> Rowex.key -> int
 val exists : reader -> Rowex.key -> bool
 val remove : writer -> Rowex.key -> unit
 val insert : writer -> Rowex.key -> int -> unit
 val from_system : ?size:int -> string -> t
-val reader : t -> (reader -> 'a) -> 'a
-val writer : t -> (writer -> 'a) -> ('a, exn) result
+val reader : t -> (uid:uid -> reader -> 'a) -> 'a
+val writer : t -> (uid:uid -> writer -> 'a) -> ('a, exn) result
 (* {b NOTE}: The writer specified in the function is not {b shareable} and
    cannot be used across multiple domains. It must be assigned to a specific
    domain and remain there. *)
