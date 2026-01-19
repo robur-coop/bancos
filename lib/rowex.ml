@@ -456,6 +456,18 @@ module Make (S : S) = struct
     in
     go 0
 
+  let n4_iter_child m addr fn =
+    let rec go i =
+      if i < 4 then
+        let* c = atomic_get m (_n4_branch addr i) Value.addr_rd in
+        if not (Addr.is_null c) then
+          let* () = fn m c in
+          go (succ i)
+        else go (succ i)
+      else return ()
+    in
+    go 0
+
   external n16_get_child : int -> int -> string -> int = "caml_n16_get_child"
   [@@noalloc]
 
@@ -478,6 +490,22 @@ module Make (S : S) = struct
     let bitfield = n16_get_child 16 k keys in
     _n16_find_child m addr k bitfield
 
+  let n16_iter_child m addr fn =
+    let rec go idx : unit t =
+      if idx >= 16 then return ()
+      else
+        let* c =
+          atomic_get m
+            A.(addr + _header_length + 16 + (idx * A.length))
+            Value.addr_rd
+        in
+        if not (A.is_null c) then
+          let* () = fn m c in
+          go (succ idx)
+        else go (succ idx)
+    in
+    go 0
+
   let n48_find_child m addr k =
     let* pos' = atomic_get m A.(addr + _header_length + k) Value.int8 in
     if pos' != 48 then
@@ -485,8 +513,38 @@ module Make (S : S) = struct
       atomic_get m b Value.addr_rd
     else return A.(to_rdonly null)
 
+  let n48_iter_child m addr fn =
+    let rec go pos =
+      if pos < 48 then
+        let* c =
+          atomic_get m
+            A.(addr + _header_length + 256 + (A.length * pos))
+            Value.addr_rd
+        in
+        if not (A.is_null c) then
+          let* () = fn m c in
+          go (succ pos)
+        else go (succ pos)
+      else return ()
+    in
+    go 0
+
   let n256_find_child m addr k =
     atomic_get m A.(addr + _header_length + (A.length * k)) Value.addr_rd
+
+  let n256_iter_child m addr fn =
+    let rec go k =
+      if k < 256 then
+        let* c =
+          atomic_get m A.(addr + _header_length + (A.length * k)) Value.addr_rd
+        in
+        if not (A.is_null c) then
+          let* () = fn m c in
+          go (succ k)
+        else go (succ k)
+      else return ()
+    in
+    go 0
 
   let rec _node_any_child m addr ~header child idx max =
     if idx = max then return child
@@ -660,6 +718,31 @@ module Make (S : S) = struct
     let n = A.unsafe_to_int n in
     let n = A.of_int_to_rdonly n in
     _lookup m n ~key ~optimistic_match:false 0
+
+  let _iter m ~fn:fn0 addr =
+    let rec fn m (addr : ro Addr.t) =
+      if (addr :> int) land 1 = 1 then begin
+        let leaf = Leaf.prj (A.unsafe_to_leaf addr) in
+        let* key = get m leaf Value.ocaml_string in
+        let* value = get_value_of_leaf m leaf ~key in
+        fn0 key value;
+        return ()
+      end
+      else
+        let* ty = get_type m addr in
+        match ty with
+        | 0 -> n4_iter_child m addr fn
+        | 1 -> n16_iter_child m addr fn
+        | 2 -> n48_iter_child m addr fn
+        | 3 -> n256_iter_child m addr fn
+        | _ -> assert false
+    in
+    n256_iter_child m addr fn
+
+  let iter m ~fn root =
+    let root = A.unsafe_to_int root in
+    let root = A.of_int_to_rdonly root in
+    _iter m ~fn root
 
   [@@@warning "-37"]
 

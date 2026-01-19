@@ -12,6 +12,7 @@ type result =
 val insert : t -> Rowex.key -> int -> command
 val remove : t -> Rowex.key -> command
 val lookup : t -> Rowex.key -> command
+val iter : fn:(Rowex.key -> int -> unit) -> t -> command
 val exists : t -> Rowex.key -> command
 val await : command -> result
 val is_running : command -> bool

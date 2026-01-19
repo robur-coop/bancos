@@ -487,6 +487,7 @@ module Rowex_rd = Rowex.Make (Reader)
 module Rowex_wr = Rowex.Make (Writer)
 
 let lookup (t : reader) = Rowex_rd.lookup t t.root
+let iter ~fn (t : reader) = Rowex_rd.iter t t.root ~fn
 let exists (t : reader) = Rowex_rd.exists t t.root
 let remove (t : writer) = Rowex_wr.remove t t.root
 let insert (t : writer) = Rowex_wr.insert t t.root

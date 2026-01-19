@@ -7,6 +7,7 @@ type writer
 type uid = private int
 
 val lookup : reader -> Rowex.key -> int
+val iter : fn:(Rowex.key -> int -> unit) -> reader -> unit
 val exists : reader -> Rowex.key -> bool
 val remove : writer -> Rowex.key -> unit
 val insert : writer -> Rowex.key -> int -> unit

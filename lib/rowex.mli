@@ -147,6 +147,7 @@ module Make (S : S) : sig
   open S
 
   val lookup : memory -> 'a rd Addr.t -> key -> int t
+  val iter : memory -> fn:(key -> int -> unit) -> 'a rd Addr.t -> unit t
   val insert : memory -> rdwr Addr.t -> key -> int -> unit t
   val exists : memory -> 'a rd Addr.t -> key -> bool t
   val remove : memory -> rdwr Addr.t -> key -> unit t

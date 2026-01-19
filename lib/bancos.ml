@@ -16,6 +16,7 @@ type command =
   | Remove of Rowex.key
   | Lookup of Rowex.key * rd Miou.Computation.t
   | Exists of Rowex.key * bool Miou.Computation.t
+  | Iter of (Rowex.key -> int -> unit) * unit Miou.Computation.t
 
 type result = [ wr | rd | `Exists of Rowex.key ]
 
@@ -25,12 +26,16 @@ let await = function
   | Lookup (_, ivar) -> (Miou.Computation.await_exn ivar :> result)
   | Exists (key, ivar) ->
       if Miou.Computation.await_exn ivar then `Exists key else `Not_found key
+  | Iter (_, ivar) ->
+      Miou.Computation.await_exn ivar;
+      `Ok
 
 let is_running = function
   | Remove _ -> false
-  | Insert (_, _, res) -> Miou.Computation.is_running res
-  | Lookup (_, res) -> Miou.Computation.is_running res
-  | Exists (_, res) -> Miou.Computation.is_running res
+  | Insert (_, _, ivar) -> Miou.Computation.is_running ivar
+  | Lookup (_, ivar) -> Miou.Computation.is_running ivar
+  | Exists (_, ivar) -> Miou.Computation.is_running ivar
+  | Iter (_, ivar) -> Miou.Computation.is_running ivar
 
 type t = {
     txs : command Miou.Queue.t
@@ -77,6 +82,9 @@ let reader t ops =
     | Exists (key, ivar) ->
         let exists = Part.exists reader key in
         assert (Miou.Computation.try_return ivar exists)
+    | Iter (fn, ivar) ->
+        Part.iter ~fn reader;
+        assert (Miou.Computation.try_return ivar ())
     | _ -> assert false
   in
   List.iter fn ops
@@ -220,6 +228,12 @@ let openfile ?(readers = 4) ?(writers = 2) ?size ?(init = nothing) filepath =
 
 let lookup t key =
   let cmd = Lookup (key, Miou.Computation.create ()) in
+  Miou.Queue.enqueue t.rxs cmd;
+  Miou.Condition.signal (snd t.rxs_locker);
+  cmd
+
+let iter ~fn t =
+  let cmd = Iter (fn, Miou.Computation.create ()) in
   Miou.Queue.enqueue t.rxs cmd;
   Miou.Condition.signal (snd t.rxs_locker);
   cmd
