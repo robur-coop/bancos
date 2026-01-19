@@ -1,0 +1,26 @@
+opam-version: "2.0"
+name: "bancos"
+synopsis: "A simple read-optimistic write-exclusive & persistent KV-store"
+maintainer: "Romain Calascibetta <romain.calascibetta@gmail.com>"
+authors: "Romain Calascibetta <romain.calascibetta@gmail.com>"
+license: "MIT"
+homepage: "https://github.com/robur-coop/bancos"
+doc: "https://robur-coop.github.io/robur-coop/"
+bug-reports: "https://github.com/robur-coop/bancos/issues"
+depends: [
+  "ocaml" {>= "5.1.0"}
+  "dune" {>= "2.8.0"}
+  "rowex" {= version}
+  "bancos" {= version}
+  "cachet"
+  "mkernel"
+]
+available:
+  arch != "ppc64" & arch != "arm32" & arch != "x86_32" & arch != "s390x"
+build: ["dune" "build" "-p" name "-j" jobs]
+run-test: ["dune" "runtest" "-p" name "-j" jobs]
+dev-repo: "git+https://github.com/robur-coop/bancos.git"
+pin-depends: [
+  [ "cachet.dev" "git+https://github.com/robur-coop/cachet.git#9ff6b438ef1b543cc6695cfcb06cf4b2048b663f" ]
+  [ "mkernel.dev" "git+https://github.com/robur-coop/mkernel.git#d0419952922b7924bc2a9a258bfebc950952751e" ]
+]
