@@ -41,3 +41,7 @@ $ dune exec bin/sdb.exe -- -i rowex.idx -c test/006.cmds
 "stable@race.org" => 13586
 ...
 ```
+
+[rowex]: https://db.in.tum.de/~leis/papers/artsync.pdf
+[p-art]: https://arxiv.org/pdf/1909.13670
+[miou]: https://github.com/robur-coop/miou
