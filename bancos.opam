@@ -18,6 +18,7 @@ depends: [
   "hxd"
   "miou" {>= "0.2"}
   "re"
+  "bstr"
   "rowex" {= version}
 ]
 available:
