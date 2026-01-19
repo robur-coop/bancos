@@ -1,0 +1,25 @@
+name: bancos
+on: [push, pull_request]
+jobs:
+  tests:
+    name: Tests
+    strategy:
+      matrix:
+        ocaml-version: [5.3.0, 5.4.0]
+        operating-system: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.operating-system }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Use OCaml ${{ matrix.ocaml-version }}
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-version }}
+          opam-local-packages: |
+            *.opam
+      - name: Install dependencies
+        run: opam install --deps-only -t bancos
+      - name: Build
+        run: opam exec -- dune build -p bancos
+      - name: Test
+        run: opam exec -- dune runtest -p bancos
