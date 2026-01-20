@@ -1,3 +1,3 @@
 (lang dune 2.8)
-(name db)
+(name bancos)
 (cram enable)
