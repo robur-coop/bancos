@@ -9,14 +9,14 @@ let try_catch ~exn:fn_exn fn =
 module Log = (val Logs.src_log src : Logs.LOG)
 
 type wr = [ `Ok | `Duplicate of Rowex.key | `Too_many_retries of Rowex.key ]
-type rd = [ `Found of Rowex.key * int | `Not_found of Rowex.key ]
+type rd = [ `Found of Rowex.key * int64 | `Not_found of Rowex.key ]
 
 type command =
-  | Insert of Rowex.key * int * wr Miou.Computation.t
+  | Insert of Rowex.key * int64 * wr Miou.Computation.t
   | Remove of Rowex.key
   | Lookup of Rowex.key * rd Miou.Computation.t
   | Exists of Rowex.key * bool Miou.Computation.t
-  | Iter of (Rowex.key -> int -> unit) * unit Miou.Computation.t
+  | Iter of (Rowex.key -> int64 -> unit) * unit Miou.Computation.t
 
 type result = [ wr | rd | `Exists of Rowex.key ]
 

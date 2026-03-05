@@ -79,6 +79,12 @@ let leintnat_to_string v =
   else assert false
 [@@inline]
 
+let leint64_to_string v =
+  let v = if Sys.big_endian then bswap64 v else v in
+  let res = Bytes.create 8 in
+  bytes_set64 res 0 v;
+  Bytes.unsafe_to_string res
+
 let leint31_to_string v =
   if Sys.big_endian then (
     let res = Bytes.create 4 in
@@ -685,7 +691,7 @@ module Make (S : S) = struct
     let len = (String.length key + size_of_word) / size_of_word in
     let len = 1 + len in
     let len = len * size_of_word in
-    get m A.(addr + len) Value.leintnat
+    get m A.(addr + len) Value.leint64
 
   let rec _lookup m n ~key ~optimistic_match level =
     let* res = check_prefix m n ~key level in
@@ -1967,9 +1973,9 @@ module Make (S : S) = struct
     Bytes.set pad (Bytes.length pad - 1) (Char.unsafe_chr rst);
     let pad = Bytes.unsafe_to_string pad in
     Log.debug (fun m ->
-        m "Insert %S => %d (%d word(s))" key value (1 + len_w + 1));
+        m "Insert %S => %Ld (%d word(s))" key value (1 + len_w + 1));
     let hdr = leintnat_to_string ((0b101 lsl _bits_kind) lor (1 + len_w + 1)) in
-    let value = leintnat_to_string value in
+    let value = leint64_to_string value in
     let* leaf = allocate m ~kind:`Leaf [ hdr; key; pad; value ] in
     insert m root key (A.unsafe_of_leaf (Leaf.inj leaf))
 end

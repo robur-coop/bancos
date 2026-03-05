@@ -1,10 +1,10 @@
 type command =
-  | Insert of Rowex.key * int
+  | Insert of Rowex.key * int64
   | Lookup of Rowex.key
   | Remove of Rowex.key
 
 let pp_command ppf = function
-  | Insert (k, v) -> Fmt.pf ppf "<insert:%S:%x>" (k :> string) v
+  | Insert (k, v) -> Fmt.pf ppf "<insert:%S:%Lx>" (k :> string) v
   | Lookup k -> Fmt.pf ppf "<lookup:%S>" (k :> string)
   | Remove k -> Fmt.pf ppf "<remove:%S>" (k :> string)
 
@@ -15,7 +15,7 @@ let gen_key =
   | "" -> bad_test ()
   | key -> ( try Rowex.key key with _ -> bad_test ())
 
-let gen_insert = map [ gen_key; int ] @@ fun k v -> Insert (k, v)
+let gen_insert = map [ gen_key; int64 ] @@ fun k v -> Insert (k, v)
 let gen_insert = with_printer pp_command gen_insert
 let gen_lookup = map [ gen_key ] @@ fun k -> Lookup k
 let gen_lookup = with_printer pp_command gen_lookup
@@ -69,7 +69,7 @@ end
 
 let pp_result ppf = function
   | `Ok -> Fmt.string ppf "<ok>"
-  | `Found v -> Fmt.pf ppf "<found:%x>" v
+  | `Found v -> Fmt.pf ppf "<found:%Lx>" v
   | `Not_found -> Fmt.string ppf "<not-found>"
   | `Duplicate -> Fmt.string ppf "<duplicate>"
 

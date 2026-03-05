@@ -91,6 +91,10 @@ module C = struct
   external get_leint31 : memory -> int -> int = "caml_get_leint31" [@@noalloc]
   external get_leintnat : memory -> int -> int = "caml_get_leintnat" [@@noalloc]
 
+  external get_leint64 : memory -> int -> (int64[@unboxed])
+    = "unimplemented" "caml_get_leint64"
+  [@@noalloc]
+
   external set_n48_key : memory -> int -> int -> int -> unit
     = "caml_set_n48_key"
   [@@noalloc]
@@ -268,6 +272,7 @@ module Reader = struct
         C.get_ocaml_string_length memory (Addr.unsafe_to_int addr)
     | LEInt31 -> C.get_leint31 memory (Addr.unsafe_to_int addr)
     | LEInt -> C.get_leintnat memory (Addr.unsafe_to_int addr)
+    | LEInt64 -> C.get_leint64 memory (Addr.unsafe_to_int addr)
     | _ -> assert false
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =

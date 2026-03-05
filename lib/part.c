@@ -322,6 +322,10 @@ CAMLprim value caml_get_leintnat(value memory, value addr) {
 #endif
 }
 
+uint64_t caml_get_leint64(value memory, value addr) {
+  return memory_uint64_off(memory, addr)[0];
+}
+
 /* XXX(dinosaure): instr. below should appears only
  * according to [ART_{CLWB,CLFLUSHOPT,CLFLUSH,DC_CVAC}]
  * and the architecture of the host (target?) system.

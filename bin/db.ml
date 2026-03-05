@@ -1,5 +1,5 @@
 type command =
-  | Insert of Rowex.key * int
+  | Insert of Rowex.key * int64
   | Remove of Rowex.key
   | Lookup of Rowex.key
   | Noop
@@ -12,8 +12,8 @@ let iter ?(quiet = false) to_delete node =
     match Bancos.await cmd with
     | `Not_found key -> Logs.err (fun m -> m "%S not found" (key :> string))
     | `Found (key, value) ->
-        if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
-        Logs.info (fun m -> m "%S => %x" (key :> string) value)
+        if not quiet then Fmt.pr "%S => %Ld\n%!" (key :> string) value;
+        Logs.info (fun m -> m "%S => %Lx" (key :> string) value)
     | `Duplicate key ->
         Logs.err (fun m -> m "%S already exists" (key :> string))
     | `Too_many_retries key ->
@@ -67,7 +67,7 @@ let parse line =
   | "insert" :: key :: value :: _ -> (
       try
         let key = Rowex.key key in
-        let value = int_of_string value in
+        let value = Int64.of_string value in
         Ok (Insert (key, value))
       with _ -> Error `Invalid_insert_command)
   | "remove" :: key :: _ -> (
