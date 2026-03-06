@@ -1,5 +1,5 @@
 type command =
-  | Insert of Rowex.key * int
+  | Insert of Rowex.key * int64
   | Remove of Rowex.key
   | Lookup of Rowex.key
   | Noop
@@ -16,8 +16,8 @@ let execute ?(quiet = false) commands filepath size =
           Part.reader t @@ fun ~uid:_ reader ->
           match Part.lookup reader key with
           | value ->
-              if not quiet then Fmt.pr "%S => %d\n%!" (key :> string) value;
-              Logs.info (fun m -> m "%S => %d" (key :> string) value)
+              if not quiet then Fmt.pr "%S => %Ld\n%!" (key :> string) value;
+              Logs.info (fun m -> m "%S => %Ld" (key :> string) value)
           | exception Not_found ->
               Logs.err (fun m -> m "%S does not exist" (key :> string));
               raise Not_found
@@ -46,7 +46,7 @@ let parse line =
   | "insert" :: key :: value :: _ -> (
       try
         let key = Rowex.key key in
-        let value = int_of_string value in
+        let value = Int64.of_string value in
         Ok (Insert (key, value))
       with _ -> Error `Invalid_insert_command)
   | "remove" :: key :: _ -> (

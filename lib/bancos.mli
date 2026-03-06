@@ -4,15 +4,15 @@ type command
 type result =
   [ `Ok
   | `Not_found of Rowex.key
-  | `Found of Rowex.key * int
+  | `Found of Rowex.key * int64
   | `Duplicate of Rowex.key
   | `Too_many_retries of Rowex.key
   | `Exists of Rowex.key ]
 
-val insert : t -> Rowex.key -> int -> command
+val insert : t -> Rowex.key -> int64 -> command
 val remove : t -> Rowex.key -> command
 val lookup : t -> Rowex.key -> command
-val iter : fn:(Rowex.key -> int -> unit) -> t -> command
+val iter : fn:(Rowex.key -> int64 -> unit) -> t -> command
 val exists : t -> Rowex.key -> command
 val await : command -> result
 val is_running : command -> bool
