@@ -14,8 +14,6 @@ let iter ?(quiet = false) to_delete node =
     | `Found (key, value) ->
         if not quiet then Fmt.pr "%S => %Ld\n%!" (key :> string) value;
         Logs.info (fun m -> m "%S => %Lx" (key :> string) value)
-    | `Duplicate key ->
-        Logs.err (fun m -> m "%S already exists" (key :> string))
     | `Too_many_retries key ->
         Logs.err (fun m -> m "Too many retries for %S" (key :> string))
     | `Exists key -> Logs.info (fun m -> m "%S exists" (key :> string))

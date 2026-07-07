@@ -496,6 +496,7 @@ let iter ~fn (t : reader) = Rowex_rd.iter t t.root ~fn
 let exists (t : reader) = Rowex_rd.exists t t.root
 let remove (t : writer) = Rowex_wr.remove t t.root
 let insert (t : writer) = Rowex_wr.insert t t.root
+let update (t : writer) = Rowex_wr.insert ~or_update:true t t.root
 
 let make ~filepath memory =
   C.atomic_set_leuintnat memory 0 (size_of_word * 2);

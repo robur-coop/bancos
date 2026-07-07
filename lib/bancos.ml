@@ -8,7 +8,7 @@ let try_catch ~exn:fn_exn fn =
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-type wr = [ `Ok | `Duplicate of Rowex.key | `Too_many_retries of Rowex.key ]
+type wr = [ `Ok | `Too_many_retries of Rowex.key ]
 type rd = [ `Found of Rowex.key * int64 | `Not_found of Rowex.key ]
 
 type command =
@@ -56,10 +56,9 @@ let writer t ops =
         Log.debug (fun m ->
             m "[%016x] start to insert %S" (uid :> int) (key :> string));
         let fn () =
-          Part.insert writer key value;
+          Part.update writer key value;
           Miou.Computation.try_return ivar `Ok
         and exn bt = function
-          | Rowex.Duplicate -> Miou.Computation.try_return ivar (`Duplicate key)
           | Rowex.Too_many_retries ->
               Miou.Computation.try_return ivar (`Too_many_retries key)
           | exn -> Miou.Computation.try_cancel ivar (exn, bt)

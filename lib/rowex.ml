@@ -683,11 +683,13 @@ module Make (S : S) = struct
         ; level : int
       }
 
-  let get_value_of_leaf m addr ~key =
+  let value_offset_of_leaf ~key =
     let len = (String.length key + size_of_word) / size_of_word in
     let len = 1 + len in
-    let len = len * size_of_word in
-    get m A.(addr + len) Value.leint64
+    len * size_of_word
+
+  let get_value_of_leaf m addr ~key =
+    atomic_get m A.(addr + value_offset_of_leaf ~key) Value.leint64
 
   let rec _lookup m n ~key ~optimistic_match level =
     let* res = check_prefix m n ~key level in
@@ -1396,7 +1398,7 @@ module Make (S : S) = struct
       done;
       if !idx < off then raise Duplicate)
 
-  let insert m root key leaf =
+  let insert ?(or_update = false) m root key leaf =
     let retries = ref 0 in
     let null = A.(of_int_to_rdwr (null :> int)) in
     let rec restart () =
@@ -1479,10 +1481,23 @@ module Make (S : S) = struct
               (* TODO(dinosaure): we probably can do something smarter
                  then [=]. [next_level] can be used to check only a part
                  of [key] instead of the whole string. *)
-              if key' = key then begin
-                let* () = write_unlock m node in
-                raise Duplicate
-              end
+              if key' = key then
+                if or_update then begin
+                  let existing = Leaf.prj (A.unsafe_to_leaf next_node) in
+                  let raw_leaf = Leaf.prj (A.unsafe_to_leaf leaf) in
+                  let voff = value_offset_of_leaf ~key in
+                  let* value = atomic_get m A.(raw_leaf + voff) Value.leint64 in
+                  let* () =
+                    atomic_set m A.(existing + voff) Value.leint64 value
+                  in
+                  let* () = persist m A.(existing + voff) ~len:size_of_word in
+                  let* () = write_unlock m node in
+                  delete m raw_leaf (voff + size_of_word)
+                end
+                else begin
+                  let* () = write_unlock m node in
+                  raise Duplicate
+                end
               else begin
                 let pl = ref 0 in
                 while key'.![level + !pl] == key.![level + !pl] do
@@ -1895,7 +1910,7 @@ module Make (S : S) = struct
     let* (N256 addr) = alloc_n256 m ~prefix:"" ~prefix_count:0 ~level:0 in
     return addr
 
-  let insert m root key value =
+  let insert ?or_update m root key value =
     let len_w = (String.length key + size_of_word) / size_of_word in
     let len_b = len_w * size_of_word in
     let pad = Bytes.make (len_b - String.length key) '\000' in
@@ -1905,5 +1920,5 @@ module Make (S : S) = struct
     let hdr = leintnat_to_string ((0b101 lsl _bits_kind) lor (1 + len_w + 1)) in
     let value = leint64_to_string value in
     let* leaf = allocate m ~kind:`Leaf [ hdr; key; pad; value ] in
-    insert m root key (A.unsafe_of_leaf (Leaf.inj leaf))
+    insert ?or_update m root key (A.unsafe_of_leaf (Leaf.inj leaf))
 end

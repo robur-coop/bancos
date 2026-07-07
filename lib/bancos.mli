@@ -5,7 +5,6 @@ type result =
   [ `Ok
   | `Not_found of Rowex.key
   | `Found of Rowex.key * int64
-  | `Duplicate of Rowex.key
   | `Too_many_retries of Rowex.key
   | `Exists of Rowex.key ]
 
