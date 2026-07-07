@@ -917,8 +917,11 @@ module Make (S : S) = struct
       else return ()
   [@@inline]
 
-  let lock_version_or_restart m addr need_to_restart =
-    let* version = get_version m addr in
+  (* NOTE(dinosaure): [version] must have been read (with [get_version])
+     **before** any optimistic read of the node (like [find_child]): the
+     compare-exchange below fails if the node changed in between, which forces
+     the caller to restart instead of continue. *)
+  let lock_version_or_restart m addr version need_to_restart =
     if version land 0b10 = 0b10 || version land 1 = 1 then begin
       need_to_restart := true;
       return version
@@ -1274,7 +1277,8 @@ module Make (S : S) = struct
     let* res =
       if prefix_count + level != depth then begin
         let need_to_recover = ref false in
-        let* _ = lock_version_or_restart m addr need_to_recover in
+        let* version = get_version m addr in
+        let* _ = lock_version_or_restart m addr version need_to_recover in
         let* prefix, prefix_count =
           if !need_to_recover = false then begin
             Log.warn (fun m ->
@@ -1408,6 +1412,11 @@ module Make (S : S) = struct
       let parent = node in
       let kp = kn in
       let node = next_node in
+      (* NOTE(dinosaure): the version of [node] must be read before any read of
+         its contents ([check_prefix_pessimistic]) so that
+         [lock_version_or_restart] restarts the insertion if a concurrent
+         writer modified [node] in between. *)
+      let* version = get_version m node in
       let* res = check_prefix_pessimistic m node ~key level in
       match res with
       | Skipped_level ->
@@ -1415,7 +1424,7 @@ module Make (S : S) = struct
           restart ()
       | No_match { non_matching_key; non_matching_prefix; level = next_level }
         ->
-          let* _ = lock_version_or_restart m node need_to_restart in
+          let* _ = lock_version_or_restart m node version need_to_restart in
           if !need_to_restart then (restart [@tailcall]) ()
           else
             let* prefix, _ = get_prefix m node in
@@ -1451,7 +1460,7 @@ module Make (S : S) = struct
           let kn = key.![level] in
           let* next_node = find_child m node kn in
           if Addr.is_null next_node then
-            let* _ = lock_version_or_restart m node need_to_restart in
+            let* _ = lock_version_or_restart m node version need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let* () =
@@ -1459,7 +1468,7 @@ module Make (S : S) = struct
               in
               if !need_to_restart then (restart [@tailcall]) () else return ()
           else if (next_node :> int) land 1 = 1 then begin
-            let* _ = lock_version_or_restart m node need_to_restart in
+            let* _ = lock_version_or_restart m node version need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
               let* key' =
@@ -1746,7 +1755,8 @@ module Make (S : S) = struct
         end
       end
       else begin
-        let* _ = lock_version_or_restart m second_node restart in
+        let* version = get_version m second_node in
+        let* _ = lock_version_or_restart m second_node version restart in
         if !restart then
           let* () = write_unlock m node in
           return Restart
@@ -1798,7 +1808,7 @@ module Make (S : S) = struct
             else return ()
           end
           else if (next_node :> int) land 1 = 1 then begin
-            let* _ = lock_version_or_restart m node need_to_restart in
+            let* _ = lock_version_or_restart m node v need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else begin
               let* key' =
