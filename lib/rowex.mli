@@ -123,6 +123,10 @@ module type S = sig
 
   val get : memory -> 'a rd Addr.t -> ('t, 'v) value -> 'v t
 
+  val equal_ocaml_string : memory -> 'a rd Addr.t -> string -> bool t
+  (** [equal_ocaml_string m addr s] is [true] iff the OCaml-string stored at
+      [addr] equals [s] *)
+
   (** Allocation and ROWEX
 
       ROWEX's allocation policy is quite simple: the algorithm requests blocks

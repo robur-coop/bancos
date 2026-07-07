@@ -88,6 +88,9 @@ module C = struct
     = "caml_get_ocaml_string_length"
   [@@noalloc]
 
+  external string_eq_at : memory -> int -> string -> bool = "caml_string_eq_at"
+  [@@noalloc]
+
   external get_leint31 : memory -> int -> int = "caml_get_leint31" [@@noalloc]
   external get_leintnat : memory -> int -> int = "caml_get_leintnat" [@@noalloc]
 
@@ -296,6 +299,9 @@ module Reader = struct
         Addr.of_int_to_rdwr
           (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
 
+  let equal_ocaml_string { memory; _ } addr str =
+    C.string_eq_at memory (Addr.unsafe_to_int addr) str
+
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun _ _ _ _ -> Fmt.failwith "Invalid reader operation (<atomic_set>)"
@@ -368,6 +374,9 @@ module Writer = struct
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> Reader.atomic_get (to_reader t) addr k
+
+  let equal_ocaml_string t addr str =
+    C.string_eq_at (memory_of t) (Addr.unsafe_to_int addr) str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =

@@ -229,6 +229,7 @@ module type S = sig
 
   val pause_intrinsic : unit -> unit t
   val get : memory -> 'a rd Addr.t -> ('t, 'v) value -> 'v t
+  val equal_ocaml_string : memory -> 'a rd Addr.t -> string -> bool t
 
   val allocate :
     memory -> kind:[ `Leaf | `Node ] -> ?len:int -> string list -> rdwr Addr.t t
@@ -638,21 +639,6 @@ module Make (S : S) = struct
     end
     else return (-level)
 
-  let memcmp a b =
-    if String.length a != String.length b then raise Not_found;
-    let len = String.length a in
-    let len0 = len land 3 in
-    let len1 = len lsr 2 in
-    for i = 0 to len1 - 1 do
-      let i = i * 4 in
-      if String.unsafe_get_uint32 a i <> String.unsafe_get_uint32 b i then
-        raise Not_found
-    done;
-    for i = 0 to len0 - 1 do
-      let i = (len1 * 4) + i in
-      if a.[i] != b.[i] then raise Not_found
-    done
-
   let memeq a b =
     if String.length a != String.length b then false
     else
@@ -702,9 +688,9 @@ module Make (S : S) = struct
     if (n :> int) land 1 = 1 then begin
       let leaf = Leaf.prj (A.unsafe_to_leaf n) in
       if level < String.length key - 1 || optimistic_match then begin
-        let* key' = get m leaf Value.ocaml_string in
-        memcmp key key';
-        get_value_of_leaf m leaf ~key:key'
+        let* eq = equal_ocaml_string m leaf key in
+        if not eq then raise Not_found;
+        get_value_of_leaf m leaf ~key
       end
       else get_value_of_leaf m leaf ~key
     end
@@ -1890,9 +1876,8 @@ module Make (S : S) = struct
             let leaf = Leaf.prj (A.unsafe_to_leaf node) in
             let* key_len' = get m leaf Value.ocaml_string_length in
             if key_len != key_len' then return false
-            else if level < key_len - 1 || optimistic_match then (
-              let* key' = get m leaf Value.ocaml_string in
-              return (memeq key key'))
+            else if level < key_len - 1 || optimistic_match then
+              equal_ocaml_string m leaf key
             else return true
           else _exists m node ~key ~key_len ~optimistic_match (succ level)
 

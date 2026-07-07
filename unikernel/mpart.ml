@@ -119,6 +119,21 @@ module C = struct
     let pd = int63_to_int pd in
     ((ln - 2) * 8) - (pd lsr 56) - 1
 
+  let string_eq_at t off str =
+    (* allocation-free key comparison; length first (also bounds the scan). *)
+    let len = get_ocaml_string_length t off in
+    if len <> String.length str then false
+    else begin
+      let base = off + 8 in
+      let rec go i =
+        if i >= len then true
+        else if Cachet_wr.get_uint8 t.wr (base + i) <> Char.code str.[i] then
+          false
+        else go (i + 1)
+      in
+      go 0
+    end
+
   let get_ocaml_string t off =
     let len = get_ocaml_string_length t off in
     Log.debug (fun m -> m "load string at %016x (len: %d)" off len);
@@ -245,6 +260,9 @@ module Reader = struct
         Addr.of_int_to_rdwr
           (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
 
+  let equal_ocaml_string { memory; _ } addr str =
+    C.string_eq_at memory (Addr.unsafe_to_int addr) str
+
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun _ _ _ _ -> Fmt.failwith "Invalid reader operation (<atomic_set>)"
@@ -318,6 +336,9 @@ module Writer = struct
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> Reader.atomic_get (to_reader t) addr k
+
+  let equal_ocaml_string t addr str =
+    Reader.equal_ocaml_string (to_reader t) addr str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
