@@ -1,5 +1,3 @@
-let () = Printexc.record_backtrace true
-
 exception Duplicate
 exception Too_many_retries
 
@@ -597,22 +595,20 @@ module Make (S : S) = struct
 
   let minimum m (addr : _ rd A.t) = minimum m (A.to_rdonly addr) [@@inline]
 
-  let pp_type_of_int ppf = function
+  let[@warning "-32"] pp_type_of_int ppf = function
     | 0 -> Fmt.string ppf "node4"
     | 1 -> Fmt.string ppf "node16"
     | 2 -> Fmt.string ppf "node48"
     | 3 -> Fmt.string ppf "node256"
     | _ -> assert false
 
-  let pp_char ppf x =
+  let[@warning "-32"] pp_char ppf x =
     let code = Char.code x in
     if code >= 33 && code < 127 then Fmt.pf ppf "'%c'" x
     else Fmt.pf ppf "%02x" code
 
   let find_child m addr k =
     let* ty = get_type m addr in
-    Log.debug (fun m ->
-        m "find child with %a byte (%a)" pp_char k pp_type_of_int ty);
     match ty with
     | 0 -> n4_find_child m addr k
     | 1 -> n16_find_child m addr (Char.code k)
@@ -695,9 +691,6 @@ module Make (S : S) = struct
 
   let rec _lookup m n ~key ~optimistic_match level =
     let* res = check_prefix m n ~key level in
-    Log.debug (fun m -> m "lookup: current node %016x" (Addr.unsafe_to_int n));
-    Log.debug (fun m -> m "lookup: check prefix %d (level:%d)" res level);
-    Log.debug (fun m -> m "lookup: optimistic? %b" (res >= 0));
     let optimistic_match, level =
       if res >= 0 then (true, res) else (optimistic_match, abs res)
     in
@@ -705,20 +698,15 @@ module Make (S : S) = struct
     let* n = find_child m n key.![level] in
     if A.is_null n then raise Not_found;
     if (n :> int) land 1 = 1 then begin
-      Log.debug (fun m -> m "lookup: found a leaf");
       let leaf = Leaf.prj (A.unsafe_to_leaf n) in
       if level < String.length key - 1 || optimistic_match then begin
         let* key' = get m leaf Value.ocaml_string in
-        Log.debug (fun m -> m "find: memcmp %S %S" key key');
         memcmp key key';
         get_value_of_leaf m leaf ~key:key'
       end
       else get_value_of_leaf m leaf ~key
     end
-    else begin
-      Log.debug (fun m -> m "lookup: continue (%d => %d)" level (succ level));
-      _lookup m n ~key ~optimistic_match (succ level)
-    end
+    else _lookup m n ~key ~optimistic_match (succ level)
 
   let lookup m n key =
     let n = A.unsafe_to_int n in
@@ -805,9 +793,6 @@ module Make (S : S) = struct
       if ccount == 48 then return false else sync_ccount_n48 m addr
 
   let add_child_n48 m (N48 addr) k v flush =
-    Log.debug (fun m ->
-        m "(node48) %016x[%a] <~ %016x" (Addr.unsafe_to_int addr) pp_char
-          (Char.unsafe_chr k) (Addr.unsafe_to_int v));
     let* ccount = get_compact_count m addr in
     if ccount == 48 then return false
     else
@@ -888,12 +873,10 @@ module Make (S : S) = struct
 
   let write_unlock m addr =
     let* _ = fetch_add m A.(addr + _header_kind) Value.leintnat 0b10 in
-    return (Log.debug (fun m -> m "%016x unlocked" (Addr.unsafe_to_int addr)))
+    return ()
 
   let write_unlock_and_obsolete m addr =
-    let* v = fetch_add m A.(addr + _header_kind) Value.leintnat 0b11 in
-    Log.debug (fun m ->
-        m "%016x:%016x unlocked & obsolete" (Addr.unsafe_to_int addr) v);
+    let* _ = fetch_add m A.(addr + _header_kind) Value.leintnat 0b11 in
     return ()
 
   let is_obsolete version = version land 1 = 1
@@ -920,8 +903,6 @@ module Make (S : S) = struct
   let rec write_lock_or_restart m addr need_to_restart =
     let* version = atomic_get m A.(addr + _header_kind) Value.leintnat in
     let* version = until_is_locked m addr version 0 in
-    Log.debug (fun m ->
-        m "write lock or restart %016x: %016x" (Addr.unsafe_to_int addr) version);
     if is_obsolete version then begin
       need_to_restart := true;
       return ()
@@ -933,16 +914,11 @@ module Make (S : S) = struct
           Value.leintnat (Atomic.make version) (version + 0b10)
       in
       if not res then write_lock_or_restart m addr need_to_restart
-      else begin
-        Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr));
-        return ()
-      end
+      else return ()
   [@@inline]
 
   let lock_version_or_restart m addr need_to_restart =
     let* version = get_version m addr in
-    Log.debug (fun m ->
-        m "try to lock %016x (%016x)" (Addr.unsafe_to_int addr) version);
     if version land 0b10 = 0b10 || version land 1 = 1 then begin
       need_to_restart := true;
       return version
@@ -953,10 +929,7 @@ module Make (S : S) = struct
           A.(addr + _header_kind)
           Value.leintnat (Atomic.make version) (version + 0b10)
       in
-      if set then begin
-        Log.debug (fun m -> m "%016x locked" (Addr.unsafe_to_int addr));
-        return (version + 0b10)
-      end
+      if set then return (version + 0b10)
       else begin
         need_to_restart := true;
         return version
@@ -1018,9 +991,6 @@ module Make (S : S) = struct
   let update_child : memory -> 'c0 wr A.t -> char -> 'c1 rd A.t -> unit t =
    fun m addr k ptr ->
     let* ty = get_type m addr in
-    Log.debug (fun m ->
-        m "%016x[%a] <- %016x" (A.unsafe_to_int addr) pp_char k
-          (A.unsafe_to_int ptr));
     let k = Char.code k in
     match ty with
     | 0 -> n4_update_child m addr k ptr
@@ -1219,10 +1189,6 @@ module Make (S : S) = struct
       -> unit t =
    fun m n p k kp v need_to_restart ->
     let addr = addr_of n in
-    Log.debug (fun m ->
-        m "insert-grow: %016x[%a] <- %016x"
-          (Addr.unsafe_to_int (addr_of n))
-          pp_char k (Addr.unsafe_to_int v));
     let* inserted = add_child m n k v true in
     if inserted then write_unlock m addr
     else
@@ -1242,11 +1208,6 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
-        Log.debug (fun m ->
-            m "insert-grow: %016x[%a] <- %016x"
-              (p :> int)
-              pp_char kp
-              (addr' :> int));
         let* () = update_child m p kp (Addr.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
@@ -1276,10 +1237,6 @@ module Make (S : S) = struct
     let* prefix, prefix_count = get_prefix m addr in
     let* level = get_depth m addr in
     let* n' = alloc m ~according_to:n ~prefix ~prefix_count ~level in
-    Log.debug (fun m ->
-        m "insert-compact: %016x[%a] <- %016x"
-          (addr_of n :> int)
-          pp_char k (Addr.unsafe_to_int v));
     let* () = copy_into m n n' in
     let* added = add_child m n' k v false in
     if not added then
@@ -1299,11 +1256,6 @@ module Make (S : S) = struct
         let size' = size_of n' in
         let addr' = addr_of n' in
         let* () = persist m addr' ~len:size' in
-        Log.debug (fun m ->
-            m "insert-compact: %016x[%a] <- %016x"
-              (p :> int)
-              pp_char kp
-              (addr' :> int));
         let* () = update_child m p kp (A.to_rdonly addr') in
         let* () = write_unlock m p in
         let* () = write_unlock_and_obsolete m addr in
@@ -1318,8 +1270,6 @@ module Make (S : S) = struct
 
   let check_prefix_pessimistic m addr ~key level =
     let* prefix, prefix_count = get_prefix m addr in
-    Log.debug (fun m ->
-        m "insertion: check pessimistic %S:%d" prefix prefix_count);
     let* depth = get_depth m addr in
     let* res =
       if prefix_count + level != depth then begin
@@ -1353,9 +1303,6 @@ module Make (S : S) = struct
     match res with
     | None -> return Skipped_level
     | Some (prefix, prefix_count) ->
-        Log.debug (fun m ->
-            m "insertion: check prefix (pessimistic) with %S:%d" prefix
-              prefix_count);
         if prefix_count > 0 then begin
           let level' = level in
           let kt = Lazy.from_fun @@ fun () -> minimum_key m addr in
@@ -1430,9 +1377,6 @@ module Make (S : S) = struct
           else return ()
         else insert_grow m (N48 addr) p k kp v need_to_restart
     | 3 ->
-        Log.debug (fun m ->
-            m "insert: %016x[%02x] <- %016x (node256)" (A.unsafe_to_int addr)
-              (Char.code k) (A.unsafe_to_int v));
         let* res = add_child m (N256 addr) k v true in
         if res then write_unlock m addr
         else
@@ -1457,7 +1401,6 @@ module Make (S : S) = struct
         Log.warn (fun m -> m "Too many retries to insert %S" (key :> string));
         raise Too_many_retries
       end;
-      Log.debug (fun m -> m "insert: retry (%d)" !retries);
       let* () = S.pause_intrinsic () in
       (_insert [@tailcall]) null root null '\000' 0
     and _insert node next_node _parent kn level =
@@ -1465,8 +1408,6 @@ module Make (S : S) = struct
       let parent = node in
       let kp = kn in
       let node = next_node in
-      Log.debug (fun m ->
-          m "insertion: walk into %016x and check prefix" (A.unsafe_to_int node));
       let* res = check_prefix_pessimistic m node ~key level in
       match res with
       | Skipped_level ->
@@ -1474,9 +1415,6 @@ module Make (S : S) = struct
           restart ()
       | No_match { non_matching_key; non_matching_prefix; level = next_level }
         ->
-          Log.debug (fun m ->
-              m "insertion: no match %a %S (%d => %d)" pp_char non_matching_key
-                non_matching_prefix level next_level);
           let* _ = lock_version_or_restart m node need_to_restart in
           if !need_to_restart then (restart [@tailcall]) ()
           else
@@ -1503,20 +1441,12 @@ module Make (S : S) = struct
               let* () = write_unlock m parent in
               let* () =
                 let* _, prefix_count = get_prefix m node in
-                Log.debug (fun m ->
-                    m "insert: prefix count = %d - ((%d - %d) + 1)" prefix_count
-                      next_level level);
                 let prefix_count = prefix_count - (next_level - level + 1) in
-                Log.debug (fun m ->
-                    m "insert: set prefix %S:%d" non_matching_prefix
-                      prefix_count);
                 set_prefix m node ~prefix:non_matching_prefix ~prefix_count true
               in
               let* () = write_unlock m node in
               return ()
       | Match { level = next_level } ->
-          Log.debug (fun m ->
-              m "insertion: match (level:%d => %d)" level next_level);
           let level = next_level in
           let kn = key.![level] in
           let* next_node = find_child m node kn in
@@ -1524,16 +1454,11 @@ module Make (S : S) = struct
             let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
-              let () =
-                Log.debug (fun m ->
-                    m "insertion: the branch is free, insert the leaf")
-              in
               let* () =
                 insert_and_unlock m node parent kn kp leaf need_to_restart
               in
               if !need_to_restart then (restart [@tailcall]) () else return ()
           else if (next_node :> int) land 1 = 1 then begin
-            Log.debug (fun m -> m "insertion: the next node is a leaf");
             let* _ = lock_version_or_restart m node need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
             else
@@ -1542,8 +1467,6 @@ module Make (S : S) = struct
                 get m leaf Value.ocaml_string
               in
               let level = level + 1 in
-              Log.debug (fun m ->
-                  m "insertion: match with a leaf %S %S" key' key);
               (* TODO(dinosaure): we probably can do something smarter
                  then [=]. [next_level] can be used to check only a part
                  of [key] instead of the whole string. *)
@@ -1876,8 +1799,6 @@ module Make (S : S) = struct
           end
           else if (next_node :> int) land 1 = 1 then begin
             let* _ = lock_version_or_restart m node need_to_restart in
-            Log.debug (fun m ->
-                m "remove: start to rebalance (restart? %b)" !need_to_restart);
             if !need_to_restart then (restart [@tailcall]) ()
             else begin
               let* key' =
@@ -1946,7 +1867,6 @@ module Make (S : S) = struct
             if key_len != key_len' then return false
             else if level < key_len - 1 || optimistic_match then (
               let* key' = get m leaf Value.ocaml_string in
-              Log.debug (fun m -> m "memeq %S %S" key key');
               return (memeq key key'))
             else return true
           else _exists m node ~key ~key_len ~optimistic_match (succ level)
@@ -1972,8 +1892,6 @@ module Make (S : S) = struct
     let rst = (len_w * size_of_word) - 1 - String.length key in
     Bytes.set pad (Bytes.length pad - 1) (Char.unsafe_chr rst);
     let pad = Bytes.unsafe_to_string pad in
-    Log.debug (fun m ->
-        m "Insert %S => %Ld (%d word(s))" key value (1 + len_w + 1));
     let hdr = leintnat_to_string ((0b101 lsl _bits_kind) lor (1 + len_w + 1)) in
     let value = leint64_to_string value in
     let* leaf = allocate m ~kind:`Leaf [ hdr; key; pad; value ] in
