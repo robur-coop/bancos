@@ -204,6 +204,10 @@ let can_we_sweep_it writer uid' =
   in
   older_active_process = null || uid' < older_active_process
 
+let gen_counter = Atomic.make 1
+let gen () = Atomic.fetch_and_add gen_counter 1
+let gen_upper_bound () = Atomic.get gen_counter
+
 let collect t writer addr ~len ~uid =
   let addr = Rowex.Addr.unsafe_to_int addr in
   Log.debug (fun m ->
@@ -412,9 +416,7 @@ module Make (C : S) = struct
       && not (Atomic.compare_and_set t.older_active_process seen older)
     then update_older_active_process ~backoff:(Miou.Backoff.once backoff) t
 
-  let gen =
-    let v = Atomic.make 1 in
-    fun () -> Atomic.fetch_and_add v 1
+  let gen = gen
 
   let add_process t kind =
     let uid = gen () in
