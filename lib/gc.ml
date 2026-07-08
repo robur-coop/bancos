@@ -186,19 +186,18 @@ let unsafe_add_free_cell t writer ~addr ~len =
 let get_free_cell writer ~len =
   if Atomic.get writer.free_cells > 0 then
     Miou.Mutex.protect writer.free_locker @@ fun () ->
-    match Set.to_list (Hashtbl.find writer.free len) with
-    | [ cell ] ->
-        ignore (Atomic.fetch_and_add writer.free_cells (-1));
-        Hashtbl.remove writer.free len;
-        Some cell
-    | cell :: cells ->
-        ignore (Atomic.fetch_and_add writer.free_cells (-1));
-        Hashtbl.replace writer.free len (Set.of_list cells);
-        Some cell
-    | [] ->
+    match Hashtbl.find_opt writer.free len with
+    | None -> None
+    | Some cells when Set.is_empty cells ->
         Hashtbl.remove writer.free len;
         None
-    | exception Not_found -> None
+    | Some cells ->
+        let cell = Set.min_elt cells in
+        let cells = Set.remove cell cells in
+        ignore (Atomic.fetch_and_add writer.free_cells (-1));
+        if Set.is_empty cells then Hashtbl.remove writer.free len
+        else Hashtbl.replace writer.free len cells;
+        Some cell
   else None
 
 let can_we_sweep_it ~older uid' = older = null || uid' < older
