@@ -244,7 +244,11 @@ let sweep t writer =
     Miou.Mutex.protect t.free_locker @@ fun () ->
     List.iter (fun (addr, len) -> unsafe_add_free_cell t writer ~addr ~len) free
   in
-  if Miou.Queue.length t.collected > 0 then really_sweep ()
+  let older = Atomic.get t.older_active_process in
+  if Atomic.get t.swept_older <> older then begin
+    Atomic.set t.swept_older older;
+    if Miou.Queue.length t.collected > 0 then really_sweep ()
+  end
 
 exception Retry_after_extension
 
