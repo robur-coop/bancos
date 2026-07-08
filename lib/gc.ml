@@ -122,6 +122,7 @@ type 'mem t = {
   ; free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
   ; older_active_process : int Atomic.t
+  ; swept_older : int Atomic.t
   ; collected : cell Miou.Queue.t
   ; in_sync : 'mem Miou.Computation.t option ref
   ; extend_and_copy : int -> 'mem -> 'mem * int
@@ -142,6 +143,7 @@ let make ~extend_and_copy memory_from_t =
   let free = Hashtbl.create 0x7ff in
   let free_cells = Atomic.make 0 in
   let older_active_process = Atomic.make 0 in
+  let swept_older = Atomic.make min_int in
   let collected = Miou.Queue.create () in
   let queue_locker = Miou.Mutex.create () in
   let active_processes = Queue.create () in
@@ -153,6 +155,7 @@ let make ~extend_and_copy memory_from_t =
   ; free
   ; free_cells
   ; older_active_process
+  ; swept_older
   ; collected
   ; queue_locker
   ; active_processes
@@ -198,11 +201,7 @@ let get_free_cell writer ~len =
     | exception Not_found -> None
   else None
 
-let can_we_sweep_it writer uid' =
-  let older_active_process =
-    Atomic.get (Sys.opaque_identity writer.older_active_process)
-  in
-  older_active_process = null || uid' < older_active_process
+let can_we_sweep_it ~older uid' = older = null || uid' < older
 
 let gen_counter = Atomic.make 1
 let gen () = Atomic.fetch_and_add gen_counter 1
@@ -212,22 +211,30 @@ let collect t writer addr ~len ~uid =
   let addr = Rowex.Addr.unsafe_to_int addr in
   Log.debug (fun m ->
       m "[%016x] collects %016x (%d byte(s)) made by %016x" writer addr len uid);
-  (* TODO(dinosaure): I don't remmember if we need to keep the task which
-     collects the cell ([writer]) or if we need to keep the task which made the
-     cell ([uid]):
-     - If we use [uid], we fallback to an unreachable case on [rowex]: not
-       in-sync nodes... So we break something.
-     - If we use [writer], we don't really re-use cells. *)
-  Miou.Queue.enqueue t.collected { addr; len; uid = writer }
+  (* NOTE(dinosaure): Any process alive when the cell is collected may still hold
+     a pointer to it (whatever its uid: a process more recent than the collector
+     may have started to walk the tree before the cell was unpublished). So we
+     stamp the cell with an upper bound of the uid of every alive process: the
+     cell becomes really free (see [can_we_sweep_it]) only once the oldest active
+     process is more recent than this stamp - processes appearing after the
+     collection can not reach the cell anymore, it was unpublished from the tree
+     beforehand. *)
+  Miou.Queue.enqueue t.collected { addr; len; uid = gen_upper_bound () }
 
 let sweep t writer =
   let really_sweep () =
     Log.debug (fun m -> m "sweep: %016x start" writer);
+    let older =
+      Miou.Mutex.protect t.queue_locker @@ fun () ->
+      match Queue.peek t.active_processes with
+      | older, _ -> older
+      | exception Queue.Empty -> null
+    in
     let collected = Miou.Queue.(to_list (transfer t.collected)) in
     let free, keep =
       List.fold_left
         (fun (free, keep) ({ addr; len; uid } as cell) ->
-          if can_we_sweep_it t uid then ((addr, len) :: free, keep)
+          if can_we_sweep_it ~older uid then ((addr, len) :: free, keep)
           else (free, cell :: keep))
         ([], []) collected
     in
