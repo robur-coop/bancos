@@ -15,8 +15,9 @@ module type S = sig
   val length : memory -> int
   val atomic_fetch_add_leuintnat : memory -> int -> int -> int
   val atomic_set_leuintnat : memory -> int -> int -> unit
-  val set_int32 : memory -> int -> int32 -> unit
-  val set_uint8 : memory -> int -> int -> unit
+
+  val blit_from_string :
+    string -> src_off:int -> memory -> dst_off:int -> len:int -> unit
 end
 
 module Make (C : S) : sig

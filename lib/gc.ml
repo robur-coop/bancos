@@ -260,17 +260,15 @@ let unsafe_count_active_writers t =
 
 let size_of_word = Sys.word_size / 8
 
-external string_unsafe_get_uint32 : string -> int -> int32
-  = "%caml_string_get32"
-
 module type S = sig
   type memory
 
   val length : memory -> int
   val atomic_fetch_add_leuintnat : memory -> int -> int -> int
   val atomic_set_leuintnat : memory -> int -> int -> unit
-  val set_int32 : memory -> int -> int32 -> unit
-  val set_uint8 : memory -> int -> int -> unit
+
+  val blit_from_string :
+    string -> src_off:int -> memory -> dst_off:int -> len:int -> unit
 end
 
 module Make (C : S) = struct
@@ -288,17 +286,7 @@ module Make (C : S) = struct
     match payloads with
     | hd :: tl ->
         let len = String.length hd in
-        let len0 = len land 3 in
-        let len1 = len asr 2 in
-        for i = 0 to len1 - 1 do
-          let i = i * 4 in
-          let v = string_unsafe_get_uint32 hd i in
-          C.set_int32 memory (dst_off + i) v
-        done;
-        for i = 0 to len0 - 1 do
-          let i = (len1 * 4) + i in
-          C.set_uint8 memory (dst_off + i) (Char.code hd.[i])
-        done;
+        C.blit_from_string hd ~src_off:0 memory ~dst_off ~len;
         blitv tl memory (dst_off + len)
     | [] -> ()
 

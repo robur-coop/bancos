@@ -198,8 +198,22 @@ module W = struct
     C.atomic_fetch_add_leuintnat t.memory off v
 
   let atomic_set_leuintnat t off v = C.atomic_set_leuintnat t.memory off v
-  let set_int32 t off v = Cachet_wr.set_int32_ne t.memory.wr off v
-  let set_uint8 t off v = Cachet_wr.set_uint8 t.memory.wr off v
+
+  external string_get32 : string -> int -> int32 = "%caml_string_get32u"
+
+  let blit_from_string src ~src_off t ~dst_off ~len =
+    let len0 = len land 3 in
+    let len1 = len asr 2 in
+    for i = 0 to len1 - 1 do
+      let i = i * 4 in
+      let v = string_get32 src (src_off + i) in
+      Cachet_wr.set_int32_ne t.memory.wr (dst_off + i) v
+    done;
+    for i = 0 to len0 - 1 do
+      let i = (len1 * 4) + i in
+      Cachet_wr.set_uint8 t.memory.wr (dst_off + i)
+        (Char.code src.[src_off + i])
+    done
 end
 
 module Garbage_collector = Gc.Make (W)
