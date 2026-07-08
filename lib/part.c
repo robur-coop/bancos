@@ -5,6 +5,7 @@
 #include <caml/memory.h>
 #include <caml/mlvalues.h>
 #include <stdatomic.h>
+#include <string.h>
 
 #define is_aligned(ptr, byte_count)                                            \
   (((uintptr_t)(const void *)(ptr)) % (byte_count) == 0)
@@ -452,6 +453,33 @@ CAMLprim value caml_get_ocaml_string_length(value memory, value addr) {
 
   return Val_long((ln - 2) * sizeof(uintnat) -
                   (v0[ln - 2] >> ((sizeof(uintnat) * 8) - 8)) - 1);
+}
+
+/* XXX(dinosaure): Allocation-free comparison of the OCaml-string stored at
+ * [addr] against [str]. */
+CAMLprim value caml_string_eq_at(value memory, value addr, value str) {
+  const uintnat *v0 = memory_uintnat_off(memory, addr);
+  uintnat ln = v0[0];
+
+#if defined(__ARCH_SIXTYFOUR)
+  ln &= 0xfffffffffffffff;
+#else
+  ln &= 0xfffffff;
+#endif
+
+#if defined(ART_BIG_ENDIAN) && defined(__ARCH_SIXTYFOUR)
+  ln = __bswap_64(ln);
+#elif defined(ART_BIG_ENDIAN)
+  ln = __bswap_32(ln);
+#endif
+
+  size_t stored = (ln - 2) * sizeof(uintnat) -
+                  (v0[ln - 2] >> ((sizeof(uintnat) * 8) - 8)) - 1;
+  if (stored != caml_string_length(str))
+    return Val_false;
+  const char *p =
+      (const char *)memory_uint8_off(memory, addr) + sizeof(uintnat);
+  return memcmp(p, String_val(str), stored) == 0 ? Val_true : Val_false;
 }
 
 void movnt64(uint64_t *dst, uint64_t const src) {

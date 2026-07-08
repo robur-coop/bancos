@@ -122,6 +122,7 @@ type 'mem t = {
   ; free : (int, Set.t) Hashtbl.t
   ; free_cells : int Atomic.t
   ; older_active_process : int Atomic.t
+  ; swept_older : int Atomic.t
   ; collected : cell Miou.Queue.t
   ; in_sync : 'mem Miou.Computation.t option ref
   ; extend_and_copy : int -> 'mem -> 'mem * int
@@ -142,6 +143,7 @@ let make ~extend_and_copy memory_from_t =
   let free = Hashtbl.create 0x7ff in
   let free_cells = Atomic.make 0 in
   let older_active_process = Atomic.make 0 in
+  let swept_older = Atomic.make min_int in
   let collected = Miou.Queue.create () in
   let queue_locker = Miou.Mutex.create () in
   let active_processes = Queue.create () in
@@ -153,6 +155,7 @@ let make ~extend_and_copy memory_from_t =
   ; free
   ; free_cells
   ; older_active_process
+  ; swept_older
   ; collected
   ; queue_locker
   ; active_processes
@@ -183,47 +186,54 @@ let unsafe_add_free_cell t writer ~addr ~len =
 let get_free_cell writer ~len =
   if Atomic.get writer.free_cells > 0 then
     Miou.Mutex.protect writer.free_locker @@ fun () ->
-    match Set.to_list (Hashtbl.find writer.free len) with
-    | [ cell ] ->
-        ignore (Atomic.fetch_and_add writer.free_cells (-1));
-        Hashtbl.remove writer.free len;
-        Some cell
-    | cell :: cells ->
-        ignore (Atomic.fetch_and_add writer.free_cells (-1));
-        Hashtbl.replace writer.free len (Set.of_list cells);
-        Some cell
-    | [] ->
+    match Hashtbl.find_opt writer.free len with
+    | None -> None
+    | Some cells when Set.is_empty cells ->
         Hashtbl.remove writer.free len;
         None
-    | exception Not_found -> None
+    | Some cells ->
+        let cell = Set.min_elt cells in
+        let cells = Set.remove cell cells in
+        ignore (Atomic.fetch_and_add writer.free_cells (-1));
+        if Set.is_empty cells then Hashtbl.remove writer.free len
+        else Hashtbl.replace writer.free len cells;
+        Some cell
   else None
 
-let can_we_sweep_it writer uid' =
-  let older_active_process =
-    Atomic.get (Sys.opaque_identity writer.older_active_process)
-  in
-  older_active_process = null || uid' < older_active_process
+let can_we_sweep_it ~older uid' = older = null || uid' < older
+
+let gen_counter = Atomic.make 1
+let gen () = Atomic.fetch_and_add gen_counter 1
+let gen_upper_bound () = Atomic.get gen_counter
 
 let collect t writer addr ~len ~uid =
   let addr = Rowex.Addr.unsafe_to_int addr in
   Log.debug (fun m ->
       m "[%016x] collects %016x (%d byte(s)) made by %016x" writer addr len uid);
-  (* TODO(dinosaure): I don't remmember if we need to keep the task which
-     collects the cell ([writer]) or if we need to keep the task which made the
-     cell ([uid]):
-     - If we use [uid], we fallback to an unreachable case on [rowex]: not
-       in-sync nodes... So we break something.
-     - If we use [writer], we don't really re-use cells. *)
-  Miou.Queue.enqueue t.collected { addr; len; uid = writer }
+  (* NOTE(dinosaure): Any process alive when the cell is collected may still hold
+     a pointer to it (whatever its uid: a process more recent than the collector
+     may have started to walk the tree before the cell was unpublished). So we
+     stamp the cell with an upper bound of the uid of every alive process: the
+     cell becomes really free (see [can_we_sweep_it]) only once the oldest active
+     process is more recent than this stamp - processes appearing after the
+     collection can not reach the cell anymore, it was unpublished from the tree
+     beforehand. *)
+  Miou.Queue.enqueue t.collected { addr; len; uid = gen_upper_bound () }
 
 let sweep t writer =
   let really_sweep () =
     Log.debug (fun m -> m "sweep: %016x start" writer);
+    let older =
+      Miou.Mutex.protect t.queue_locker @@ fun () ->
+      match Queue.peek t.active_processes with
+      | older, _ -> older
+      | exception Queue.Empty -> null
+    in
     let collected = Miou.Queue.(to_list (transfer t.collected)) in
     let free, keep =
       List.fold_left
         (fun (free, keep) ({ addr; len; uid } as cell) ->
-          if can_we_sweep_it t uid then ((addr, len) :: free, keep)
+          if can_we_sweep_it ~older uid then ((addr, len) :: free, keep)
           else (free, cell :: keep))
         ([], []) collected
     in
@@ -233,7 +243,11 @@ let sweep t writer =
     Miou.Mutex.protect t.free_locker @@ fun () ->
     List.iter (fun (addr, len) -> unsafe_add_free_cell t writer ~addr ~len) free
   in
-  if Miou.Queue.length t.collected > 0 then really_sweep ()
+  let older = Atomic.get t.older_active_process in
+  if Atomic.get t.swept_older <> older then begin
+    Atomic.set t.swept_older older;
+    if Miou.Queue.length t.collected > 0 then really_sweep ()
+  end
 
 exception Retry_after_extension
 
@@ -246,17 +260,15 @@ let unsafe_count_active_writers t =
 
 let size_of_word = Sys.word_size / 8
 
-external string_unsafe_get_uint32 : string -> int -> int32
-  = "%caml_string_get32"
-
 module type S = sig
   type memory
 
   val length : memory -> int
   val atomic_fetch_add_leuintnat : memory -> int -> int -> int
   val atomic_set_leuintnat : memory -> int -> int -> unit
-  val set_int32 : memory -> int -> int32 -> unit
-  val set_uint8 : memory -> int -> int -> unit
+
+  val blit_from_string :
+    string -> src_off:int -> memory -> dst_off:int -> len:int -> unit
 end
 
 module Make (C : S) = struct
@@ -274,17 +286,7 @@ module Make (C : S) = struct
     match payloads with
     | hd :: tl ->
         let len = String.length hd in
-        let len0 = len land 3 in
-        let len1 = len asr 2 in
-        for i = 0 to len1 - 1 do
-          let i = i * 4 in
-          let v = string_unsafe_get_uint32 hd i in
-          C.set_int32 memory (dst_off + i) v
-        done;
-        for i = 0 to len0 - 1 do
-          let i = (len1 * 4) + i in
-          C.set_uint8 memory (dst_off + i) (Char.code hd.[i])
-        done;
+        C.blit_from_string hd ~src_off:0 memory ~dst_off ~len;
         blitv tl memory (dst_off + len)
     | [] -> ()
 
@@ -412,9 +414,7 @@ module Make (C : S) = struct
       && not (Atomic.compare_and_set t.older_active_process seen older)
     then update_older_active_process ~backoff:(Miou.Backoff.once backoff) t
 
-  let gen =
-    let v = Atomic.make 1 in
-    fun () -> Atomic.fetch_and_add v 1
+  let gen = gen
 
   let add_process t kind =
     let uid = gen () in

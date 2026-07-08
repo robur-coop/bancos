@@ -119,6 +119,21 @@ module C = struct
     let pd = int63_to_int pd in
     ((ln - 2) * 8) - (pd lsr 56) - 1
 
+  let string_eq_at t off str =
+    (* allocation-free key comparison; length first (also bounds the scan). *)
+    let len = get_ocaml_string_length t off in
+    if len <> String.length str then false
+    else begin
+      let base = off + 8 in
+      let rec go i =
+        if i >= len then true
+        else if Cachet_wr.get_uint8 t.wr (base + i) <> Char.code str.[i] then
+          false
+        else go (i + 1)
+      in
+      go 0
+    end
+
   let get_ocaml_string t off =
     let len = get_ocaml_string_length t off in
     Log.debug (fun m -> m "load string at %016x (len: %d)" off len);
@@ -183,8 +198,22 @@ module W = struct
     C.atomic_fetch_add_leuintnat t.memory off v
 
   let atomic_set_leuintnat t off v = C.atomic_set_leuintnat t.memory off v
-  let set_int32 t off v = Cachet_wr.set_int32_ne t.memory.wr off v
-  let set_uint8 t off v = Cachet_wr.set_uint8 t.memory.wr off v
+
+  external string_get32 : string -> int -> int32 = "%caml_string_get32u"
+
+  let blit_from_string src ~src_off t ~dst_off ~len =
+    let len0 = len land 3 in
+    let len1 = len asr 2 in
+    for i = 0 to len1 - 1 do
+      let i = i * 4 in
+      let v = string_get32 src (src_off + i) in
+      Cachet_wr.set_int32_ne t.memory.wr (dst_off + i) v
+    done;
+    for i = 0 to len0 - 1 do
+      let i = (len1 * 4) + i in
+      Cachet_wr.set_uint8 t.memory.wr (dst_off + i)
+        (Char.code src.[src_off + i])
+    done
 end
 
 module Garbage_collector = Gc.Make (W)
@@ -244,6 +273,9 @@ module Reader = struct
     | Addr_rdwr ->
         Addr.of_int_to_rdwr
           (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
+
+  let equal_ocaml_string { memory; _ } addr str =
+    C.string_eq_at memory (Addr.unsafe_to_int addr) str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
@@ -318,6 +350,9 @@ module Writer = struct
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> Reader.atomic_get (to_reader t) addr k
+
+  let equal_ocaml_string t addr str =
+    Reader.equal_ocaml_string (to_reader t) addr str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =

@@ -123,6 +123,10 @@ module type S = sig
 
   val get : memory -> 'a rd Addr.t -> ('t, 'v) value -> 'v t
 
+  val equal_ocaml_string : memory -> 'a rd Addr.t -> string -> bool t
+  (** [equal_ocaml_string m addr s] is [true] iff the OCaml-string stored at
+      [addr] equals [s] *)
+
   (** Allocation and ROWEX
 
       ROWEX's allocation policy is quite simple: the algorithm requests blocks
@@ -148,7 +152,14 @@ module Make (S : S) : sig
 
   val lookup : memory -> 'a rd Addr.t -> key -> int64 t
   val iter : memory -> fn:(key -> int64 -> unit) -> 'a rd Addr.t -> unit t
-  val insert : memory -> rdwr Addr.t -> key -> int64 -> unit t
+
+  val insert : ?or_update:bool -> memory -> rdwr Addr.t -> key -> int64 -> unit t
+  (** [insert m root key value] adds [key => value] to the tree.
+
+      @raise Duplicate if [key] is already bound and [or_update] is [false]
+      (the default). When [or_update] is [true], an existing binding is
+      {b atomically} replaced instead. *)
+
   val exists : memory -> 'a rd Addr.t -> key -> bool t
   val remove : memory -> rdwr Addr.t -> key -> unit t
   val make : memory -> rdwr Addr.t t

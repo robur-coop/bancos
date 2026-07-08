@@ -88,6 +88,9 @@ module C = struct
     = "caml_get_ocaml_string_length"
   [@@noalloc]
 
+  external string_eq_at : memory -> int -> string -> bool = "caml_string_eq_at"
+  [@@noalloc]
+
   external get_leint31 : memory -> int -> int = "caml_get_leint31" [@@noalloc]
   external get_leintnat : memory -> int -> int = "caml_get_leintnat" [@@noalloc]
 
@@ -112,8 +115,9 @@ module W = struct
     C.atomic_fetch_add_leuintnat t.memory off v
 
   let atomic_set_leuintnat t off v = C.atomic_set_leuintnat t.memory off v
-  let set_int32 t off v = Bstr.set_int32_ne t.memory off v
-  let set_uint8 t off v = Bstr.set_uint8 t.memory off v
+
+  let blit_from_string src ~src_off t ~dst_off ~len =
+    Bstr.blit_from_string src ~src_off t.memory ~dst_off ~len
 end
 
 module Garbage_collector = Gc.Make (W)
@@ -253,6 +257,34 @@ let scan (rowex : t) =
   done;
   Log.debug (fun m -> m "%d cell(s) collected" !collected)
 
+let unsafe_get : type k v. memory -> int -> (k, v) Rowex.value -> v =
+ fun memory addr v ->
+  let open Rowex in
+  match v with
+  | OCaml_string -> C.get_ocaml_string memory addr
+  | OCaml_string_length -> C.get_ocaml_string_length memory addr
+  | LEInt31 -> C.get_leint31 memory addr
+  | LEInt -> C.get_leintnat memory addr
+  | LEInt64 -> C.get_leint64 memory addr
+  | _ -> assert false
+
+let unsafe_atomic_get : type v. memory -> int -> (Rowex.atomic, v) Rowex.value -> v
+    =
+ fun memory addr k ->
+  let open Rowex in
+  match k with
+  | Int8 -> C.atomic_get_uint8 memory addr
+  | LEInt -> C.atomic_get_leuintnat memory addr
+  | LEInt16 -> C.atomic_get_leuint16 memory addr
+  | LEInt31 -> C.atomic_get_leuint31 memory addr
+  | LEInt64 -> C.atomic_get_leuint64 memory addr
+  | LEInt128 ->
+      let res = Bytes.create 16 in
+      C.atomic_get_leuint128 memory addr res;
+      Bytes.unsafe_to_string res
+  | Addr_rd -> Addr.of_int_to_rdonly (C.atomic_get_leuintnat memory addr)
+  | Addr_rdwr -> Addr.of_int_to_rdwr (C.atomic_get_leuintnat memory addr)
+
 module Reader = struct
   type memory = reader
   type 'a t = 'a
@@ -263,38 +295,14 @@ module Reader = struct
   open Rowex
 
   let get : type k v. memory -> 'a rd Addr.t -> (k, v) value -> v t =
-   fun { memory; _ } addr v ->
-    Log.debug (fun m ->
-        m "get        %016x : %a" (Addr.unsafe_to_int addr) pp_value v);
-    match v with
-    | OCaml_string -> C.get_ocaml_string memory (Addr.unsafe_to_int addr)
-    | OCaml_string_length ->
-        C.get_ocaml_string_length memory (Addr.unsafe_to_int addr)
-    | LEInt31 -> C.get_leint31 memory (Addr.unsafe_to_int addr)
-    | LEInt -> C.get_leintnat memory (Addr.unsafe_to_int addr)
-    | LEInt64 -> C.get_leint64 memory (Addr.unsafe_to_int addr)
-    | _ -> assert false
+   fun { memory; _ } addr v -> unsafe_get memory (Addr.unsafe_to_int addr) v
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun { memory; _ } addr k ->
-    Log.debug (fun m ->
-        m "atomic_get %016x : %a" (Addr.unsafe_to_int addr) pp_value k);
-    match k with
-    | Int8 -> C.atomic_get_uint8 memory (Addr.unsafe_to_int addr)
-    | LEInt -> C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr)
-    | LEInt16 -> C.atomic_get_leuint16 memory (Addr.unsafe_to_int addr)
-    | LEInt31 -> C.atomic_get_leuint31 memory (Addr.unsafe_to_int addr)
-    | LEInt64 -> C.atomic_get_leuint64 memory (Addr.unsafe_to_int addr)
-    | LEInt128 ->
-        let res = Bytes.create 16 in
-        C.atomic_get_leuint128 memory (Addr.unsafe_to_int addr) res;
-        Bytes.unsafe_to_string res
-    | Addr_rd ->
-        Addr.of_int_to_rdonly
-          (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
-    | Addr_rdwr ->
-        Addr.of_int_to_rdwr
-          (C.atomic_get_leuintnat memory (Addr.unsafe_to_int addr))
+    unsafe_atomic_get memory (Addr.unsafe_to_int addr) k
+
+  let equal_ocaml_string { memory; _ } addr str =
+    C.string_eq_at memory (Addr.unsafe_to_int addr) str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
@@ -357,25 +365,22 @@ module Writer = struct
 
   open Rowex
 
-  let to_reader (writer : memory) =
-    {
-      memory = (Gc.memory writer.gc).memory
-    ; root = Rowex.Addr.to_rdonly writer.root
-    }
+  let memory_of (writer : memory) = (Gc.memory writer.gc).W.memory
+  [@@inline always]
 
   let get : type k v. memory -> 'a rd Addr.t -> (k, v) value -> v t =
-   fun t addr k -> Reader.get (to_reader t) addr k
+   fun t addr k -> unsafe_get (memory_of t) (Addr.unsafe_to_int addr) k
 
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
-   fun t addr k -> Reader.atomic_get (to_reader t) addr k
+   fun t addr k -> unsafe_atomic_get (memory_of t) (Addr.unsafe_to_int addr) k
+
+  let equal_ocaml_string t addr str =
+    C.string_eq_at (memory_of t) (Addr.unsafe_to_int addr) str
 
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun t addr k v ->
-    let ({ memory; _ } : reader) = to_reader t in
-    Log.debug (fun m ->
-        m "atomic_set %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
-          v pp_value k);
+    let memory = memory_of t in
     match k with
     | Int8 -> C.atomic_set_uint8 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_set_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -393,10 +398,7 @@ module Writer = struct
   let fetch_add : memory -> 'a wr Addr.t -> (atomic, int) value -> int -> int t
       =
    fun t addr k v ->
-    let ({ memory; _ } : reader) = to_reader t in
-    Log.debug (fun m ->
-        m "fetch_add  %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
-          v pp_value k);
+    let memory = memory_of t in
     match k with
     | LEInt16 -> C.atomic_fetch_add_leuint16 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_fetch_add_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -405,10 +407,7 @@ module Writer = struct
   let fetch_sub : memory -> 'a wr Addr.t -> (atomic, int) value -> int -> int t
       =
    fun t addr k v ->
-    let ({ memory; _ } : reader) = to_reader t in
-    Log.debug (fun m ->
-        m "fetch_sub  %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
-          v pp_value k);
+    let memory = memory_of t in
     match k with
     | LEInt16 -> C.atomic_fetch_sub_leuint16 memory (Addr.unsafe_to_int addr) v
     | LEInt -> C.atomic_fetch_sub_leuintnat memory (Addr.unsafe_to_int addr) v
@@ -416,10 +415,7 @@ module Writer = struct
 
   let fetch_or : memory -> 'a wr Addr.t -> (atomic, int) value -> int -> int t =
    fun t addr k v ->
-    let ({ memory; _ } : reader) = to_reader t in
-    Log.debug (fun m ->
-        m "fetch_or   %016x (%a : %a)" (Addr.unsafe_to_int addr) (pp_of_value k)
-          v pp_value k);
+    let memory = memory_of t in
     match k with
     | LEInt -> C.atomic_fetch_or_leuintnat memory (Addr.unsafe_to_int addr) v
     | _ -> assert false
@@ -433,14 +429,7 @@ module Writer = struct
       -> a
       -> bool t =
    fun t ?(weak = false) addr k expected desired ->
-    let ({ memory; _ } : reader) = to_reader t in
-    Log.debug (fun m ->
-        m "compare_exchange weak:%b %016x (%a : %a) (%a : %a)" weak
-          (Addr.unsafe_to_int addr)
-          (pp_of_value ~prefer_hex:true k)
-          (Atomic.get expected) pp_value k
-          (pp_of_value ~prefer_hex:true k)
-          desired pp_value k);
+    let memory = memory_of t in
     match (k, weak) with
     | LEInt, true ->
         C.atomic_compare_exchange_weak memory (Addr.unsafe_to_int addr) expected
@@ -451,17 +440,13 @@ module Writer = struct
     | _ -> assert false
 
   let persist t (addr : 'c wr Addr.t) ~len =
-    Log.debug (fun m -> m "persist    %016x (%d)" (Addr.unsafe_to_int addr) len);
-    let ({ memory; _ } : reader) = to_reader t in
-    C.persist memory (Addr.unsafe_to_int addr) len
+    C.persist (memory_of t) (Addr.unsafe_to_int addr) len
 
   let set_n48_key t (addr : 'c wr Addr.t) k c =
-    let ({ memory; _ } : reader) = to_reader t in
-    C.set_n48_key memory (Addr.unsafe_to_int addr) k c
+    C.set_n48_key (memory_of t) (Addr.unsafe_to_int addr) k c
 
   let movnt64 t ~(dst : 'c wr Addr.t) src =
-    let ({ memory; _ } : reader) = to_reader t in
-    C.movnt64 memory (Addr.unsafe_to_int dst) src
+    C.movnt64 (memory_of t) (Addr.unsafe_to_int dst) src
 
   let allocate (t : memory) ~kind ?len payloads =
     let len =
@@ -470,16 +455,12 @@ module Writer = struct
       | None -> List.fold_left (fun a str -> a + String.length str) 0 payloads
     in
     let { W.uid; _ } = Gc.memory t.gc in
-    Log.debug (fun m -> m "[%016x] alloctate %3d" (uid :> int) len);
     Garbage_collector.alloc t.gc ~writer:uid ~kind len payloads
 
   let delete (t : memory) (addr : 'a Addr.t) len =
-    Log.debug (fun m -> m "delete     %016x %d" (Addr.unsafe_to_int addr) len);
     Garbage_collector.delete t.gc addr len
 
   let collect (t : memory) addr ~len ~uid =
-    Log.debug (fun m ->
-        m "collect    %016x %d %d" (Addr.unsafe_to_int addr) len uid);
     let { W.uid = current; _ } = Gc.memory t.gc in
     Garbage_collector.collect t.gc current addr ~len ~uid
 
@@ -496,6 +477,7 @@ let iter ~fn (t : reader) = Rowex_rd.iter t t.root ~fn
 let exists (t : reader) = Rowex_rd.exists t t.root
 let remove (t : writer) = Rowex_wr.remove t t.root
 let insert (t : writer) = Rowex_wr.insert t t.root
+let update (t : writer) = Rowex_wr.insert ~or_update:true t t.root
 
 let make ~filepath memory =
   C.atomic_set_leuintnat memory 0 (size_of_word * 2);

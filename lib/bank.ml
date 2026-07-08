@@ -102,6 +102,17 @@ module S = struct
   let atomic_get : type v. memory -> 'a rd Addr.t -> (atomic, v) value -> v t =
    fun t addr k -> get t addr k
 
+  let equal_ocaml_string { memory; _ } addr str =
+    let base = Addr.unsafe_to_int addr + size_of_word in
+    let n = String.length str in
+    let len = Bytes.length memory in
+    let rec go i =
+      if base + i >= len then false
+      else if i >= n then Bytes.get memory (base + i) = '\000'
+      else Bytes.get memory (base + i) = str.[i] && go (i + 1)
+    in
+    go 0
+
   let atomic_set : type v.
       memory -> 'a wr Addr.t -> (atomic, v) value -> v -> unit t =
    fun { memory; _ } addr t v ->
