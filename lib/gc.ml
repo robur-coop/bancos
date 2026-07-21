@@ -200,7 +200,7 @@ let unsafe_add_free_cell t writer ~addr ~len =
   ignore (Atomic.fetch_and_add t.free_cells 1)
 
 let get_free_cell writer ~len =
-  if Atomic.get writer.free_cells > 0 then
+  if Atomic.get writer.free_cells > 0 then (
     Miou.Mutex.protect writer.free_locker @@ fun () ->
     match Hashtbl.find_opt writer.free len with
     | None -> None
@@ -213,11 +213,10 @@ let get_free_cell writer ~len =
         ignore (Atomic.fetch_and_add writer.free_cells (-1));
         if Set.is_empty cells then Hashtbl.remove writer.free len
         else Hashtbl.replace writer.free len cells;
-        Some cell
+        Some cell)
   else None
 
 let can_we_sweep_it ~older uid' = older = null || uid' < older
-
 let gen_counter = Atomic.make 1
 let gen () = Atomic.fetch_and_add gen_counter 1
 let gen_upper_bound () = Atomic.get gen_counter
@@ -392,12 +391,12 @@ module Make (C : S) = struct
     | None -> begin
         ignore (sweep t writer);
         match get_free_cell t ~len with
-        | None -> begin
-            try really_alloc t writer ~kind len payloads
+        | None ->
+            begin try really_alloc t writer ~kind len payloads
             with Retry_after_extension ->
               Log.debug (fun m -> m "retry an allocation");
               really_alloc t writer ~kind len payloads
-          end
+            end
         | Some addr ->
             Log.debug (fun m ->
                 m "re-use(2) %016x (owner: [%016x])" addr writer);

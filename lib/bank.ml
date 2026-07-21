@@ -1,4 +1,3 @@
-
 (* Copyright (C) 2026 Romain Calascibetta <romain.calascibetta@gmail.com>
 
    This program is free software: you can redistribute it and/or modify

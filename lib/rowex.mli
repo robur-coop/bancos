@@ -100,7 +100,7 @@ module type S = sig
 
       More concretely, it should be (for [len <= word_size]):
       {[
-        sfence clwb addr sfence
+      sfence clwb addr sfence
       ]}
 
       {b NOTE}: the first [sfence] is not systematically needed depending on
@@ -169,12 +169,14 @@ module Make (S : S) : sig
   val lookup : memory -> 'a rd Addr.t -> key -> int64 t
   val iter : memory -> fn:(key -> int64 -> unit) -> 'a rd Addr.t -> unit t
 
-  val insert : ?or_update:bool -> memory -> rdwr Addr.t -> key -> int64 -> unit t
+  val insert :
+    ?or_update:bool -> memory -> rdwr Addr.t -> key -> int64 -> unit t
   (** [insert m root key value] adds [key => value] to the tree.
 
-      @raise Duplicate if [key] is already bound and [or_update] is [false]
-      (the default). When [or_update] is [true], an existing binding is
-      {b atomically} replaced instead. *)
+      @raise Duplicate
+        if [key] is already bound and [or_update] is [false] (the default). When
+        [or_update] is [true], an existing binding is {b atomically} replaced
+        instead. *)
 
   val exists : memory -> 'a rd Addr.t -> key -> bool t
   val remove : memory -> rdwr Addr.t -> key -> unit t

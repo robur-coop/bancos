@@ -284,8 +284,8 @@ let unsafe_get : type k v. memory -> int -> (k, v) Rowex.value -> v =
   | LEInt64 -> C.get_leint64 memory addr
   | _ -> assert false
 
-let unsafe_atomic_get : type v. memory -> int -> (Rowex.atomic, v) Rowex.value -> v
-    =
+let unsafe_atomic_get : type v.
+    memory -> int -> (Rowex.atomic, v) Rowex.value -> v =
  fun memory addr k ->
   let open Rowex in
   match k with

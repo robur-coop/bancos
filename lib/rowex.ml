@@ -1818,12 +1818,12 @@ module Make (S : S) = struct
       | Optimistic_match { level } | Match { level } ->
           let kn = key.![level] in
           let* next_node = find_child m node kn in
-          if Addr.is_null next_node then begin
-            if is_obsolete v then
+          if Addr.is_null next_node then
+            begin if is_obsolete v then
               let* const = read_unlock_or_restart m node v in
               if not const then (restart [@tailcall]) () else return ()
             else return ()
-          end
+            end
           else if (next_node :> int) land 1 = 1 then begin
             let* _ = lock_version_or_restart m node v need_to_restart in
             if !need_to_restart then (restart [@tailcall]) ()
